@@ -1,5 +1,6 @@
 build/
 dist/
+__pycache__
 .venv/
 venv/
 env/
@@ -17,3 +18,4 @@ npm-debug.log*
 .vscode/
 .DS_Store
 Thumbs.db
+ngrok-mcp.yml
