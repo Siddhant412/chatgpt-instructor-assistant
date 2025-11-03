@@ -195,7 +195,7 @@ class SummarySchema(BaseModel):
 
 @mcp.tool(meta=TOOL_META)
 async def summarize_paper_tool(paper_id: int, context: Context) -> CallToolResult:
-    """Generate a summary for the paper and persist it as a note."""
+    """Generate a summary for the paper and persist it as a note (title = paper title)."""
     paper, excerpts = _gather_excerpts(paper_id)
     if not paper:
         return _tool_result(render_library_structured(), "Paper not found.")
@@ -243,8 +243,11 @@ async def summarize_paper_tool(paper_id: int, context: Context) -> CallToolResul
             + note_body
         )
 
-    save_note(paper_id, note_body, title=f"Summary — {paper['title']}")
+    save_note(paper_id, note_body, title=(paper["title"] or "Paper Summary"))
     return _tool_result(render_library_structured(), "Summary saved to notes.")
+
+
+# Note CRUD tools
 
 @mcp.tool(meta=TOOL_META)
 def save_note_tool(
@@ -252,18 +255,69 @@ def save_note_tool(
     body: str | None = None,
     title: str | None = None,
     summary: str | None = None,
+    note_id: int | None = None,
 ) -> CallToolResult:
-    """Persist a note for a paper (body or summary text required)."""
+    """
+    Create or update a note for a paper.
+
+    - If `note_id` is provided: update that note's title/body.
+    - Else: create a new note (uses `title` and `body`/`summary`).
+    Returns the refreshed library AND the updated/created note in structuredContent['note'].
+    """
     text = body or summary
-    if not text:
-        raise ValueError("Provide note text via 'body' or 'summary'.")
-    save_note(paper_id, text, title)
-    return _tool_result(render_library_structured(), "Saved note.")
+    if note_id is not None:
+        if text is None and title is None:
+            raise ValueError("For updates, provide at least a new title or body/summary.")
+        with get_conn() as conn:
+            # Read old values to support partial updates
+            row = conn.execute("SELECT title, body FROM notes WHERE id=? AND paper_id=?", (note_id, paper_id)).fetchone()
+            if not row:
+                structured = render_library_structured()
+                return _tool_result(structured, f"Note {note_id} not found for this paper.")
+            new_title = title if title is not None else (row["title"] or "")
+            new_body = (text if text is not None else (row["body"] or ""))
+            conn.execute(
+                "UPDATE notes SET title = ?, body = ? WHERE id = ? AND paper_id = ?",
+                (new_title, new_body, note_id, paper_id),
+            )
+            conn.commit()
+            note = conn.execute(
+                "SELECT id, paper_id, title, body, created_at FROM notes WHERE id=?",
+                (note_id,),
+            ).fetchone()
+        structured = render_library_structured()
+        if note:
+            structured["note"] = dict(note)
+        return _tool_result(structured, "Updated note.")
+    else:
+        if not text:
+            raise ValueError("Provide note text via 'body' or 'summary'.")
+        # Create via existing helper
+        save_note(paper_id, text, title)
+        # Try to return the newest note for this paper
+        with get_conn() as conn:
+            note = conn.execute(
+                "SELECT id, paper_id, title, body, created_at FROM notes WHERE paper_id=? ORDER BY created_at DESC, id DESC LIMIT 1",
+                (paper_id,),
+            ).fetchone()
+        structured = render_library_structured()
+        if note:
+            structured["note"] = dict(note)
+        return _tool_result(structured, "Saved note.")
+
+@mcp.tool(meta=TOOL_META)
+def delete_note_tool(note_id: int) -> CallToolResult:
+    """Delete a single note by id."""
+    with get_conn() as conn:
+        conn.execute("DELETE FROM notes WHERE id=?", (note_id,))
+        conn.commit()
+    return _tool_result(render_library_structured(), "Deleted note.")
 
 @mcp.tool(meta=TOOL_META)
 def delete_paper_tool(paper_id: int) -> CallToolResult:
     delete_paper(paper_id)
     return _tool_result(render_library_structured(), "Deleted paper.")
+
 
 # =============================================================================
 # Start the server — built-in runner (no Starlette/Uvicorn)

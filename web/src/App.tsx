@@ -1,88 +1,219 @@
-import React from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 
 const RA_THEME = `
 :root{
-  --ra-bg:#0b0f14;
-  --ra-panel:#11161d;
-  --ra-card:#131a23;
-  --ra-border:rgba(255,255,255,0.10);
-  --ra-elev:rgba(0,0,0,0.30);
-  --ra-text:#e9edf3;
-  --ra-heading:#ffffff;
-  --ra-muted:#aab4c2;
-  --ra-accent:#7aa2ff;
-  --ra-success:#5fe1a5;
-  --ra-danger:#ff6b6b;
-  --ra-focus:#b3d3ff;
+  --ra-bg:#ffffff;
+  --ra-panel:#ffffff;
+  --ra-text:#1f2937;
+  --ra-heading:#111827;
+  --ra-muted:#6b7280;
+  --ra-border:rgba(0,0,0,0.12);
+  --ra-elev:rgba(17,24,39,0.06);
+  --ra-primary:#3b82f6;
+  --ra-danger:#ef4444;
+  --ra-soft-blue:rgba(59,130,246,0.12);
+  --ra-soft-red:rgba(239,68,68,0.12);
+  --ra-hover:rgba(0,0,0,0.04);
+  --ra-focus:#c7d2fe;
+  --ra-divider:rgba(0,0,0,0.08);
 }
+
 html, body { background: transparent; }
-.ra-root{ font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial; color:var(--ra-text); }
-.ra-grid{ display:grid; grid-template-columns: 360px 1fr; gap:16px; }
-.ra-root h1,.ra-root h2,.ra-root h3{ color:var(--ra-heading); letter-spacing:.2px; margin:0 0 6px; }
-.ra-muted{ color:var(--ra-muted); }
-.ra-title{ font-weight:700; font-size:22px; }
+.ra-root{
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  color: var(--ra-text);
+}
 
-/* Cards */
-.ra-card{ background:var(--ra-card); border:1px solid var(--ra-border); border-radius:16px; box-shadow:0 4px 18px var(--ra-elev); padding:16px; }
-.ra-card.section{ padding:18px; }
-.ra-card + .ra-card{ margin-top:12px; }
+/* Single outer card containing both columns */
+.ra-outer{
+  background: var(--ra-panel);
+  border: 1px solid var(--ra-border);
+  border-radius: 18px;
+  box-shadow: 0 10px 24px var(--ra-elev);
+  padding: 20px;
+  max-height: 100vh;     /* your preference */
+  overflow: hidden;      /* inner content scrolls */
+}
 
-/* List (papers) */
-.ra-list{ margin:0; padding:0; list-style:none; }
-.ra-list-item{ padding:10px 12px; margin:6px 0; border:1px solid var(--ra-border); border-radius:12px; background:rgba(255,255,255,0.02); cursor:pointer; transition:background .15s ease, border-color .15s ease, transform .04s ease; }
-.ra-list-item:hover{ background:rgba(255,255,255,0.05); }
-.ra-list-item.active{ background:linear-gradient(180deg, rgba(122,162,255,.20), rgba(122,162,255,.06)); border-color:rgba(122,162,255,.5); transform: translateY(-1px); }
-.ra-list-item .title{ color:var(--ra-heading); font-weight:600; }
-.ra-badge{ display:inline-flex; align-items:center; justify-content:center; background:rgba(122,162,255,.18); border-radius:10px; padding:0 6px; font-size:12px; color:var(--ra-accent); margin-left:8px; }
+/* Two-column grid */
+.ra-shell{
+  display: grid;
+  grid-template-columns: 1fr 1.2fr;
+  gap: 28px;
+  align-items: start;
+}
+
+/* Right column always carries the divider */
+.ra-col-right{
+  border-left: 1px solid var(--ra-divider);
+  padding-left: 28px;
+  display: flex;
+  flex-direction: column;
+  min-height: 240px;
+}
+
+/* Headers & actions */
+.ra-h1{
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--ra-heading);
+  margin: 0 0 6px 0;
+}
+.ra-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  margin-bottom: 12px;
+}
+.ra-actions{ display:flex; gap:10px; flex-wrap:wrap; }
 
 /* Buttons */
-.ra-btn{ appearance:none; border:1px solid var(--ra-border); background:rgba(255,255,255,.04); color:var(--ra-heading); border-radius:12px; padding:8px 12px; font-weight:600; cursor:pointer; transition: transform .04s ease, background .15s ease, border-color .15s ease, box-shadow .15s ease; }
-.ra-btn:hover{ background:rgba(255,255,255,.07); }
-.ra-btn:active{ transform: translateY(1px); }
-.ra-btn:focus-visible{ outline:none; box-shadow:0 0 0 3px var(--ra-focus); border-color:var(--ra-focus); }
-.ra-btn[disabled]{ opacity:.55; cursor:not-allowed; }
-.ra-btn-primary{ background: linear-gradient(180deg, rgba(122,162,255,.35), rgba(122,162,255,.18)); border-color: rgba(122,162,255,.6); }
-.ra-btn-primary:hover{ background: linear-gradient(180deg, rgba(122,162,255,.45), rgba(122,162,255,.22)); }
-.ra-btn-outline{ background: transparent; border-color: var(--ra-border); }
-.ra-btn-success{ background: linear-gradient(180deg, rgba(95,225,165,.35), rgba(95,225,165,.18)); border-color: rgba(95,225,165,.55); }
-.ra-btn-danger{ background: linear-gradient(180deg, rgba(255,107,107,.35), rgba(255,107,107,.18)); border-color: rgba(255,107,107,.55); }
-.ra-btn-danger:hover{ background: linear-gradient(180deg, rgba(255,107,107,.45), rgba(255,107,107,.22)); }
-
-/* Header bar (each column) */
-.ra-bar{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
-
-/* Inline add form */
-.ra-add{ display:flex; gap:8px; margin-top:10px; }
-.ra-input{
-  flex:1 1 auto;
-  padding:10px 12px;
-  border-radius:10px;
+.ra-btn{
+  appearance:none;
   border:1px solid var(--ra-border);
-  background:rgba(255,255,255,.03);
-  color:var(--ra-text);
+  background:#fff;
+  color:var(--ra-heading);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, transform .02s ease, opacity .15s ease;
 }
-.ra-input::placeholder{ color:var(--ra-muted); }
+.ra-btn:hover{ background: var(--ra-hover); }
+.ra-btn:active{ transform: translateY(1px); }
+.ra-btn:focus{ outline: 2px solid var(--ra-focus); outline-offset: 1px; }
+.ra-btn:disabled{ opacity:.5; cursor:not-allowed; }
+.ra-btn.link{
+  border-color: transparent;
+  background: transparent;
+  padding-left:0; padding-right:0;
+  font-weight: 700;
+}
+.ra-btn.soft-primary{
+  background: var(--ra-soft-blue);
+  border-color: rgba(59,130,246,0.25);
+  color: #1e40af;
+}
+.ra-btn.soft-danger{
+  background: var(--ra-soft-red);
+  border-color: rgba(239,68,68,0.25);
+  color: #7f1d1d;
+}
 
-/* Notes */
-.ra-note-title{ font-weight:700; margin:10px 0 6px; }
-.ra-note-time{ font-size:12px; color:var(--ra-muted); margin-bottom:8px; }
-.ra-note-body p{ margin:8px 0; }
-.ra-note-body ul{ margin:8px 0 8px 18px; }
-.ra-note-body li{ margin: 4px 0; }
+/* Generic cards/list items */
+.ra-card{
+  background: #fff;
+  border: 1px solid var(--ra-border);
+  border-radius: 16px;
+  box-shadow: 0 6px 16px var(--ra-elev);
+  padding: 16px;
+}
+.ra-card + .ra-card{ margin-top: 12px; }
 
-/* Scroll areas */
-.ra-scroll{ max-height: 520px; overflow:auto; scrollbar-width: thin; }
-.ra-scroll::-webkit-scrollbar { height: 6px; width: 8px; }
-.ra-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 8px; }
+.ra-list{ margin:0; padding:0; list-style:none; }
+.ra-list-item{
+  padding: 12px 14px;
+  margin: 8px 0;
+  border: 1px solid var(--ra-border);
+  border-radius: 14px;
+  background: #fff;
+  transition: background .15s ease, border-color .15s ease, transform .04s ease;
+  cursor: pointer;
+}
+.ra-list-item:hover{ background: var(--ra-hover); }
+.ra-list-item.active{
+  background: rgba(59,130,246,0.08);
+  border-color: rgba(59,130,246,0.35);
+}
+.ra-list-item .title{
+  color: var(--ra-heading);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.ra-note-count{
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--ra-muted);
+}
+
+/* Library (read) notes column scroll area */
+.ra-notes-content{
+  margin-top: 8px;
+  overflow: auto;
+  max-height: 88vh;   /* your preference */
+  padding-right: 6px;
+}
+.ra-note-title{ font-weight: 800; color: var(--ra-heading); margin: 0 0 4px 0; }
+.ra-note-date{ font-size: 12px; color: var(--ra-muted); margin-bottom: 10px; }
+.ra-note-body{ white-space: pre-wrap; }
+
+/* EDIT MODE styles (2 columns total) */
+.ra-note-list{
+  overflow: auto;
+  max-height: 88vh;
+}
+.ra-note-row{
+  padding: 10px 12px;
+  margin: 8px 0;
+  border: 1px solid var(--ra-border);
+  border-radius: 12px;
+  background: #f8fafc;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+.ra-note-row:hover{ background: var(--ra-hover); }
+.ra-note-row.active{
+  background: rgba(59,130,246,0.08);
+  border-color: rgba(59,130,246,0.35);
+}
+.ra-note-row .t{ font-weight: 700; color: var(--ra-heading); }
+.ra-note-row .d{ font-size: 12px; color: var(--ra-muted); }
+
+.ra-editor-pane{
+  display:flex; flex-direction:column;
+  overflow: auto;
+  max-height: 88vh;  /* keep editor scrolling inside */
+}
+.ra-input{
+  width: 100%;
+  border: 1px solid var(--ra-border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 15px;
+}
+.ra-input:focus{ outline: 2px solid var(--ra-focus); outline-offset: 1px; }
+.ra-textarea{
+  width: 100%;
+  min-height: 220px;
+  border: 1px solid var(--ra-border);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 14px;
+  resize: vertical;
+}
+.ra-textarea:focus{ outline: 2px solid var(--ra-focus); outline-offset: 1px; }
+.ra-status{ font-size:12px; color: var(--ra-muted); }
 `;
 
-type PaperRow = { id: number | string; title: string; source_url?: string; note_count?: number };
-type NoteRow = { id: number | string; paper_id: number | string; title?: string | null; body: string; created_at?: string | null };
-type Structured = { papers: PaperRow[]; notesByPaper: Record<string, NoteRow[]> };
+/* ---------- Types ---------- */
+type PaperRow = {
+  id: number;
+  title: string;
+  source_url?: string | null;
+  note_count?: number;
+};
+type NoteRow = {
+  id: number;
+  paper_id: number;
+  title?: string | null;
+  body: string;
+  created_at?: string;
+};
 
+/* ---------- OpenAI Apps SDK shims ---------- */
 declare global {
   interface Window {
-    openai: {
+    openai?: {
       callTool?: (name: string, args?: any) => Promise<any>;
       sendFollowUpMessage?: (payload: any) => Promise<void>;
       onStructuredContent?: (cb: (data: any) => void) => () => void;
@@ -92,281 +223,305 @@ declare global {
   }
 }
 
-function normalizeStructured(sc: any): Structured | null {
+/* Normalize initial structured content */
+function normalizeStructured(sc: any): {
+  papers: PaperRow[];
+  notesByPaper: Record<string, NoteRow[]>;
+} | null {
   if (!sc || typeof sc !== "object") return null;
   const papers = Array.isArray(sc.papers) ? sc.papers : [];
-  const notesSrc = sc.notesByPaper && typeof sc.notesByPaper === "object" ? sc.notesByPaper : {};
-  const notesByPaper: Record<string, NoteRow[]> = {};
-  for (const [key, value] of Object.entries(notesSrc)) {
-    if (!Array.isArray(value)) continue;
-    notesByPaper[String(key)] = value.map((n: any) => ({
-      id: n?.id ?? String(Math.random()),
-      paper_id: n?.paper_id ?? key,
-      title: n?.title ?? null,
-      body: typeof n?.body === "string" ? n.body : "",
-      created_at: n?.created_at ?? null,
-    }));
+  const raw = sc.notesByPaper && typeof sc.notesByPaper === "object" ? sc.notesByPaper : {};
+  const map: Record<string, NoteRow[]> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    map[k] = Array.isArray(v) ? (v as NoteRow[]) : [];
   }
-  return { papers, notesByPaper };
+  return { papers, notesByPaper: map };
 }
 
-function useResearchAppTheme() {
-  React.useEffect(() => {
-    const host = document.getElementById("root") as HTMLElement | null;
-    const target: ShadowRoot | HTMLElement | null = (host && (host as any).shadowRoot) || document.head;
-    if (!target) return;
-    const getById = (n: string) => ("getElementById" in target ? (target as any).getElementById(n) : document.getElementById(n));
-    if (getById("ra-theme")) return;
-    const style = document.createElement("style");
-    (style as any).id = "ra-theme";
-    style.textContent = RA_THEME;
-    (target as any).appendChild(style);
-  }, []);
+/* Small debounce for autosave */
+function useDebouncedCallback<T extends (...args: any[]) => void>(fn: T, delay: number) {
+  const ref = useRef<number | undefined>();
+  return (...args: Parameters<T>) => {
+    window.clearTimeout(ref.current);
+    ref.current = window.setTimeout(() => fn(...args), delay);
+  };
 }
 
+/* ---------- App ---------- */
 export default function App() {
-  useResearchAppTheme();
+  const [data, setData] = useState<{ papers: PaperRow[]; notesByPaper: Record<string, NoteRow[]> }>(() => {
+    const seed =
+      normalizeStructured(window.openai?.structuredContent) ??
+      normalizeStructured(window.openai?.toolOutput?.structuredContent) ??
+      { papers: [], notesByPaper: {} };
+    return seed;
+  });
+  const [selectedId, setSelectedId] = useState<number | null>(() => data.papers[0]?.id ?? null);
 
-  const [data, setData] = React.useState<Structured>({ papers: [], notesByPaper: {} });
-  const [selectedId, setSelectedId] = React.useState<string | null>(null);
-  const [addMode, setAddMode] = React.useState(false);
-  const [addUrl, setAddUrl] = React.useState("");
+  const [editorOpen, setEditorOpen] = useState(false);              // toggles Library vs Edit Notes modes
+  const [activeNoteId, setActiveNoteId] = useState<number | null>(null);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftBody, setDraftBody] = useState("");
+  const [saveState, setSaveState] = useState<"idle"|"saving"|"saved">("idle");
 
-  const papers = data.papers ?? [];
-
-  const updateFromStructured = React.useCallback((sc: any) => {
-    const normalized = normalizeStructured(sc);
-    if (!normalized) return;
-    setData(normalized);
-    if (!normalized.papers.length) {
-      setSelectedId(null);
-      return;
-    }
-    const firstId = String(normalized.papers[0]?.id);
-    setSelectedId(prev => (prev && normalized.papers.some(p => String(p.id) === prev) ? prev : firstId));
-  }, []);
-
-  const fetchAndSetLibrary = React.useCallback(async () => {
-    try {
-      if (!window.openai?.callTool) return;
-      const res = await window.openai.callTool("render_library", {});
-      const sc = res?.structuredContent ?? window.openai?.toolOutput ?? {};
-      updateFromStructured(sc);
-    } catch (err) {
-      console.error("render_library failed:", err);
-    }
-  }, [updateFromStructured]);
-
-  React.useEffect(() => {
-    const immediate = window.openai?.structuredContent ?? window.openai?.toolOutput;
-    if (immediate) updateFromStructured(immediate);
-    fetchAndSetLibrary();
-
-    let dispose: (() => void) | undefined;
-    try {
-      dispose = window.openai?.onStructuredContent?.((sc: any) => updateFromStructured(sc));
-    } catch (err) {
-      console.warn("onStructuredContent hook not available", err);
-    }
-
-    const handleGlobals = () => {
-      const next = window.openai?.structuredContent ?? window.openai?.toolOutput;
-      if (next) updateFromStructured(next);
-    };
-    window.addEventListener("openai:set_globals", handleGlobals);
-    return () => {
-      dispose?.();
-      window.removeEventListener("openai:set_globals", handleGlobals);
-    };
-  }, [fetchAndSetLibrary, updateFromStructured]);
-
-  const currentPaper = React.useMemo(() => {
-    if (!selectedId) return null;
-    return papers.find(p => String(p.id) === selectedId) ?? null;
-  }, [papers, selectedId]);
-
-  const notes = React.useMemo(() => {
-    if (!selectedId) return [] as NoteRow[];
+  const selectedNotes = useMemo(() => {
+    if (selectedId == null) return [];
     return data.notesByPaper[String(selectedId)] ?? [];
-  }, [data.notesByPaper, selectedId]);
+  }, [data, selectedId]);
+  const selectedPaper = useMemo(() => data.papers.find(p => p.id === selectedId) ?? null, [data, selectedId]);
 
-  const onAddSubmit = async () => {
-    const value = addUrl.trim();
-    if (!value || !window.openai?.callTool) return;
-    try {
-      await window.openai.callTool("add_paper_tool", { input_str: value });
-      setAddUrl("");
-      setAddMode(false);
-      await fetchAndSetLibrary();
-    } catch (err) {
-      console.error("add_paper_tool failed:", err);
+  // subscribe to live pushes
+  useEffect(() => {
+    const off = window.openai?.onStructuredContent?.((sc: any) => {
+      const next = normalizeStructured(sc);
+      if (next) {
+        setData(next);
+        if (next.papers.length > 0 && (selectedId == null || !next.papers.some(p => p.id === selectedId))) {
+          setSelectedId(next.papers[0].id);
+        }
+      }
+    });
+    return () => { if (typeof off === "function") off(); };
+  }, [selectedId]);
+
+  async function refresh() {
+    const out = await window.openai?.callTool?.("render_library", {});
+    const sc = normalizeStructured(out?.structuredContent ?? out);
+    if (sc) setData(sc);
+  }
+
+  // ---------- Edit Notes helpers ----------
+  function enterEditor(openNote?: NoteRow) {
+    setEditorOpen(true);
+    if (openNote) {
+      setActiveNoteId(openNote.id);
+      setDraftTitle(openNote.title || "");
+      setDraftBody(openNote.body || "");
+    } else {
+      setActiveNoteId(null);
+      setDraftTitle(selectedPaper?.title || "Untitled");
+      setDraftBody("");
     }
-  };
+    setSaveState("idle");
+  }
+  function exitEditor() {
+    setEditorOpen(false);
+    setActiveNoteId(null);
+    setSaveState("idle");
+  }
+  function pickNote(n: NoteRow) {
+    setActiveNoteId(n.id);
+    setDraftTitle(n.title || "");
+    setDraftBody(n.body || "");
+    setSaveState("idle");
+  }
 
-  const onDelete = async () => {
-    if (!selectedId || !window.openai?.callTool) return;
+  const debouncedAutosave = useDebouncedCallback(async (payload: {title: string; body: string}) => {
+    if (!selectedId) return;
+    setSaveState("saving");
     try {
-      await window.openai.callTool("delete_paper_tool", { paper_id: Number(selectedId) });
-      setSelectedId(null);
-      await fetchAndSetLibrary();
-    } catch (err) {
-      console.error("delete_paper_tool failed:", err);
+      const args: any = { paper_id: selectedId, title: payload.title, body: payload.body };
+      if (activeNoteId != null) args.note_id = activeNoteId;
+      const res = await window.openai?.callTool?.("save_note_tool", args);
+      if (res && res.structuredContent && res.structuredContent.note && typeof res.structuredContent.note.id === "number") {
+        setActiveNoteId(res.structuredContent.note.id);
+      }
+      setSaveState("saved");
+      await refresh();
+    } catch {
+      setSaveState("idle");
     }
-  };
+  }, 700);
 
-  const summarize = async () => {
-    if (!currentPaper) return;
-    const pid = Number(currentPaper.id);
-    if (Number.isNaN(pid)) return;
+  function onTitleChange(v: string) {
+    setDraftTitle(v);
+    debouncedAutosave({ title: v, body: draftBody });
+  }
+  function onBodyChange(v: string) {
+    setDraftBody(v);
+    debouncedAutosave({ title: draftTitle, body: v });
+  }
 
-    const summaryTitle = `Summary — ${currentPaper.title}`;
+  async function deleteActiveNote() {
+    if (activeNoteId == null) return;
+    try {
+      await window.openai?.callTool?.("delete_note_tool", { note_id: activeNoteId });
+      setActiveNoteId(null);
+      setDraftTitle(selectedPaper?.title || "");
+      setDraftBody("");
+      await refresh();
+    } catch {}
+  }
 
+  async function addNewNote() { enterEditor(undefined); }
+
+  // Summarize: save note with paper title then open editor on the newest note
+  async function summarizeCurrent() {
+    if (!selectedId) return;
     if (window.openai?.sendFollowUpMessage) {
-      try {
-        await window.openai.sendFollowUpMessage({
-          prompt: `You are assisting in a research library app with these tools:
-- render_library
-- add_paper_tool
-- index_paper_tool
-- get_paper_chunk_tool
-- save_note_tool
-- delete_paper_tool
-
-Goal: Create a structured summary for paper id ${pid} (title: ${JSON.stringify(currentPaper.title)}).
-Steps:
-1. If sections are missing, call index_paper_tool { "paper_id": ${pid} }.
-2. Read the sections you need via get_paper_chunk_tool.
-3. Write a 250-400 word narrative summary plus 5 key takeaways and 3 limitations (each bullet starts with "- ").
-4. Save the note only via save_note_tool {
-     "paper_id": ${pid},
-     "title": ${JSON.stringify(summaryTitle)},
-     "body": "<your formatted summary, bullets, and limitations>"
-   }.
-Important: Use only the supplied section text. Do NOT output the summary in the chat message—after saving the note, reply briefly that the summary was saved.`,
-        });
-        return;
-      } catch (err) {
-        console.error("sendFollowUpMessage summarize flow failed:", err);
-      }
+      await window.openai.sendFollowUpMessage({
+        role: "user",
+        content: [{ type: "text", text: `Summarize the paper with id ${selectedId} and save a note titled with the paper's title.` }],
+      });
+    } else {
+      await window.openai?.callTool?.("summarize_paper_tool", { paper_id: selectedId });
     }
+    await refresh();
+    // Open editor to newest note
+    const newest = (data.notesByPaper[String(selectedId)] ?? [])[0];
+    enterEditor(newest);
+  }
 
-    if (window.openai?.callTool) {
-      try {
-        await window.openai.callTool("summarize_paper_tool", { paper_id: pid });
-        await fetchAndSetLibrary();
-      } catch (err) {
-        console.error("summarize_paper_tool fallback failed:", err);
-      }
-    }
-  };
-
+  // ---------- Render ----------
   return (
     <div className="ra-root">
-      <div className="ra-grid">
-        <div className="ra-card section">
-          <div className="ra-bar">
-            <h2 className="ra-title">Research Papers</h2>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button className="ra-btn ra-btn-outline" onClick={fetchAndSetLibrary}>Refresh</button>
-              <button className="ra-btn ra-btn-danger" onClick={onDelete} disabled={!currentPaper}>Delete</button>
-              <button className="ra-btn ra-btn-primary" onClick={() => setAddMode(v => !v)}>
-                {addMode ? "Close" : "Add"}
-              </button>
-            </div>
-          </div>
+      <style>{RA_THEME}</style>
 
-          {addMode && (
-            <div className="ra-add">
-              <input
-                className="ra-input"
-                placeholder="Paste Title, DOI or landing page"
-                value={addUrl}
-                onChange={e => setAddUrl(e.target.value)}
-              />
-              <button className="ra-btn ra-btn-success" onClick={onAddSubmit}>Add</button>
-            </div>
-          )}
-
-          <div className="ra-scroll" style={{ marginTop: addMode ? 8 : 0 }}>
-            <ul className="ra-list">
-              {papers.length === 0 && (
-                <li className="ra-muted">No papers yet. Click “Add”.</li>
-              )}
-              {papers.map((p) => {
-                const pid = String(p.id);
-                return (
-                  <li
-                    key={pid}
-                    className={`ra-list-item ${selectedId === pid ? "active" : ""}`}
-                    onClick={() => setSelectedId(pid)}
-                    title={p.title}
+      <div className="ra-outer">
+        {!editorOpen ? (
+          /* ================== Library Mode ================== */
+          <div className="ra-shell">
+            {/* Left: Research papers */}
+            <section>
+              <div className="ra-head">
+                <h1 className="ra-h1">Research Papers</h1>
+                <div className="ra-actions">
+                  <button className="ra-btn link" onClick={refresh}>Refresh</button>
+                  <button
+                    className="ra-btn soft-danger"
+                    onClick={async () => {
+                      if (!selectedId) return;
+                      await window.openai?.callTool?.("delete_paper_tool", { paper_id: selectedId });
+                      await refresh();
+                    }}
+                    disabled={!selectedId}
                   >
-                    <div className="title">{p.title}</div>
-                    <div style={{ fontSize: 12, opacity: 0.75 }}>
-                      {p.note_count ? `${p.note_count} note${p.note_count === 1 ? "" : "s"}` : "No notes yet"}
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        </div>
-
-        <div className="ra-card section">
-          <div className="ra-bar">
-            <h2 className="ra-title">Notes</h2>
-            <div style={{ display: "flex", gap: 8 }}>
-              <button className="ra-btn ra-btn-outline" onClick={fetchAndSetLibrary}>Refresh</button>
-              <button className="ra-btn ra-btn-primary" onClick={summarize} disabled={!currentPaper}>
-                Summarize this paper
-              </button>
-            </div>
-          </div>
-
-          {!currentPaper && <div className="ra-muted">Select a paper to see notes.</div>}
-
-          {currentPaper && (
-            <div className="ra-scroll">
-              {notes.length === 0 ? (
-                <div className="ra-card" style={{ background: "rgba(255,255,255,.02)" }}>
-                  <div className="ra-muted">No notes yet for this paper.</div>
+                    Delete
+                  </button>
+                  <button
+                    className="ra-btn soft-primary"
+                    onClick={async () => {
+                      await window.openai?.sendFollowUpMessage?.({
+                        role: "user",
+                        content: [{ type: "input_text", text: "Add a paper (paste DOI / landing page / PDF link):" }],
+                      });
+                    }}
+                  >
+                    Add
+                  </button>
                 </div>
-              ) : (
-                notes.map((n) => (
-                  <div className="ra-card" key={String(n.id)}>
-                    <div className="ra-note-title">{n.title || "Note"}</div>
-                    <div className="ra-note-time">
-                      {n.created_at ? new Date(n.created_at).toLocaleString() : ""}
-                    </div>
-                    <div className="ra-note-body">{renderMarkdownLite(n.body)}</div>
+              </div>
+
+              <ul className="ra-list" role="list">
+                {data.papers.map(p => {
+                  const count = p.note_count ?? (data.notesByPaper[String(p.id)]?.length ?? 0);
+                  return (
+                    <li
+                      key={p.id}
+                      className={`ra-list-item ${selectedId === p.id ? "active" : ""}`}
+                      onClick={() => setSelectedId(p.id)}
+                    >
+                      <div className="title">{p.title || "Untitled paper"}</div>
+                      <div className="ra-note-count">{count} note{count === 1 ? "" : "s"}</div>
+                    </li>
+                  );
+                })}
+                {data.papers.length === 0 && (
+                  <li className="ra-card">No papers yet. Click <b>Add</b> to paste a DOI, landing page, or direct PDF URL.</li>
+                )}
+              </ul>
+            </section>
+
+            {/* Right: Notes (read) */}
+            <section className="ra-col-right">
+              <div className="ra-head">
+                <h1 className="ra-h1">Notes</h1>
+                <div className="ra-actions">
+                  <button className="ra-btn link" onClick={refresh}>Refresh</button>
+                  <button className="ra-btn soft-primary" onClick={summarizeCurrent} disabled={!selectedId}>Summarize this paper</button>
+                  <button className="ra-btn" onClick={() => enterEditor(selectedNotes[0])} disabled={!selectedId}>Edit Notes</button>
+                </div>
+              </div>
+
+              <div className="ra-notes-content">
+                {selectedId == null || selectedNotes.length === 0 ? (
+                  <div className="ra-card">No notes yet for <b>{selectedPaper?.title || "this paper"}</b>.</div>
+                ) : (
+                  selectedNotes.map(n => (
+                    <article key={n.id} className="ra-card">
+                      <h3 className="ra-note-title">{n.title || (selectedPaper?.title ? `Summary — ${selectedPaper.title}` : "Note")}</h3>
+                      {n.created_at && <div className="ra-note-date">{new Date(n.created_at).toLocaleString()}</div>}
+                      <div className="ra-note-body">{n.body}</div>
+                    </article>
+                  ))
+                )}
+              </div>
+            </section>
+          </div>
+        ) : (
+          /* ================== Edit Notes Mode (two columns total) ================== */
+          <div className="ra-shell">
+            {/* Left: note titles list */}
+            <section>
+              <div className="ra-head">
+                <h1 className="ra-h1">Notes — {selectedPaper?.title || "Untitled"}</h1>
+                <div className="ra-actions">
+                  <button className="ra-btn" onClick={exitEditor}>Back</button>
+                  <button className="ra-btn" onClick={refresh}>Refresh</button>
+                  <button className="ra-btn soft-primary" onClick={addNewNote} disabled={!selectedId}>Add</button>
+                </div>
+              </div>
+
+              <div className="ra-note-list">
+                {(selectedNotes.length === 0) && (
+                  <div className="ra-card">No notes yet. Click <b>Add</b> to create one.</div>
+                )}
+                {selectedNotes.map(n => (
+                  <div
+                    key={n.id}
+                    className={`ra-note-row ${activeNoteId === n.id ? "active" : ""}`}
+                    onClick={() => pickNote(n)}
+                  >
+                    <div className="t">{n.title || "Untitled"}</div>
+                    {n.created_at && <div className="d">{new Date(n.created_at).toLocaleString()}</div>}
                   </div>
-                ))
-              )}
-            </div>
-          )}
-        </div>
+                ))}
+              </div>
+            </section>
+
+            {/* Right: editor pane (divider applied via ra-col-right) */}
+            <section className="ra-col-right">
+              <div className="ra-head">
+                <h1 className="ra-h1">Editor</h1>
+                <div className="ra-actions">
+                  <span className="ra-status">{saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : ""}</span>
+                  <button className="ra-btn soft-danger" onClick={deleteActiveNote} disabled={activeNoteId == null}>Delete</button>
+                </div>
+              </div>
+
+              <div className="ra-editor-pane">
+                <div className="ra-card" style={{ marginBottom: 12 }}>
+                  <input
+                    className="ra-input"
+                    placeholder="Note title"
+                    value={draftTitle}
+                    onChange={(e) => onTitleChange(e.target.value)}
+                  />
+                </div>
+
+                <div className="ra-card">
+                  <textarea
+                    className="ra-textarea"
+                    placeholder="Write your note…"
+                    value={draftBody}
+                    onChange={(e) => onBodyChange(e.target.value)}
+                  />
+                </div>
+              </div>
+            </section>
+          </div>
+        )}
       </div>
     </div>
   );
-}
-
-function renderMarkdownLite(md: string) {
-  const safe = typeof md === "string" ? md : "";
-  let html = safe.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/\n{2,}/g, "\n\n");
-  const blocks = html.split(/\n\s*\n/);
-  const nodes = blocks.map((blk, i) => {
-    const lines = blk.split("\n");
-    const isList = lines.every(l => /^(\u2022|-)\s+/.test(l.trim()));
-    if (isList) {
-      return (
-        <ul key={i}>
-          {lines.map((l, j) => (
-            <li key={j} dangerouslySetInnerHTML={{ __html: l.replace(/^(\u2022|-)\s+/, "") }} />
-          ))}
-        </ul>
-      );
-    }
-    return <p key={i} dangerouslySetInnerHTML={{ __html: blk }} />;
-  });
-  return <>{nodes}</>;
 }
