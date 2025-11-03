@@ -35,8 +35,13 @@ def init_db():
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           paper_id INTEGER NOT NULL,
           body TEXT NOT NULL,
+          title TEXT,
           created_at TEXT DEFAULT (datetime('now')),
           FOREIGN KEY(paper_id) REFERENCES papers(id) ON DELETE CASCADE
         );
         """)
+        # Ensure newer columns exist for legacy databases
+        columns = {row["name"] for row in c.execute("PRAGMA table_info(notes)")}
+        if "title" not in columns:
+            c.execute("ALTER TABLE notes ADD COLUMN title TEXT")
         conn.commit()

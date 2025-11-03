@@ -1,15 +1,13 @@
 from __future__ import annotations
-
+import re
 from pathlib import Path
-from typing import Any, Tuple
-
-import uvicorn
-from starlette.applications import Starlette
-from starlette.middleware.cors import CORSMiddleware
-
+from typing import Any, Dict, Tuple
+from pydantic import BaseModel, Field
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.server import Context
+from mcp.types import CallToolResult, TextContent
 
-from server.db import init_db
+from server.db import init_db, get_conn
 from server.tools.render_library import render_library_structured
 from server.tools.add_paper import add_paper
 from server.tools.index_paper import index_paper
@@ -20,34 +18,26 @@ from server.tools.delete_paper import delete_paper
 
 DIST_DIR = (Path(__file__).parent.parent / "web" / "dist")
 
-
-def _read_first(patterns: list[str]) -> str:
-    """
-    Return the text of the first file in dist matching any of the given glob patterns
-    """
-    for pat in patterns:
+def _read_first(globs: list[str]) -> str:
+    for pat in globs:
         for p in DIST_DIR.glob(pat):
             return p.read_text(encoding="utf-8")
     return ""
 
-
-WIDGET_JS_TEXT: str
-WIDGET_FIXED = DIST_DIR / "widget.js"
-if WIDGET_FIXED.exists():
-    WIDGET_JS_TEXT = WIDGET_FIXED.read_text(encoding="utf-8")
+fixed = DIST_DIR / "widget.js"
+if fixed.exists():
+    WIDGET_JS = fixed.read_text(encoding="utf-8")
 else:
-    WIDGET_NO_EXT = DIST_DIR / "widget"
-    if WIDGET_NO_EXT.exists():
-        WIDGET_JS_TEXT = WIDGET_NO_EXT.read_text(encoding="utf-8")
+    alt = DIST_DIR / "widget"
+    if alt.exists():
+        WIDGET_JS = alt.read_text(encoding="utf-8")
     else:
-        WIDGET_JS_TEXT = _read_first(["*.js", "assets/*.js"])
-        if not WIDGET_JS_TEXT:
-            raise FileNotFoundError(
-                "No JS bundle found in web/dist. Build the widget: `cd web && npm run build`."
-            )
+        WIDGET_JS = _read_first(["*.js", "assets/*.js"])
+        if not WIDGET_JS:
+            WIDGET_JS = ""
+            print("[WARN] No web/dist/widget.js found. Run: cd web && npm i && npm run build")
 
-WIDGET_CSS_TEXT = _read_first(["*.css", "assets/*.css"])
-
+WIDGET_CSS = _read_first(["*.css", "assets/*.css"])
 
 # MCP server
 
@@ -56,208 +46,239 @@ TEMPLATE_URI = "ui://widget/research-notes.html"
 
 init_db()
 
-
-@mcp.resource(TEMPLATE_URI)
-def research_notes_widget() -> dict[str, Any]:
+@mcp.resource(
+    TEMPLATE_URI,
+    mime_type="text/html+skybridge",
+    annotations={
+        "openai/widgetAccessible": True,
+        "openai/widgetPrefersBorder": True,
+    },
+)
+def research_notes_widget() -> str:
     """
-    UI template rendered inside ChatGPT (Apps SDK).
-    Must be served as `text/html+skybridge` and should enable component-initiated tool calls
-    with `_meta["openai/widgetAccessible"] = True`.
+    Return an HTML fragment rendered in the ChatGPT Apps UI.
     """
-    html = f"""
-<div id="root"></div>
-{f"<style>{WIDGET_CSS_TEXT}</style>" if WIDGET_CSS_TEXT else ""}
-<script type="module">
-{WIDGET_JS_TEXT}
-</script>
-""".strip()
-
-    return {
-        "contents": [
-            {
-                "uri": TEMPLATE_URI,
-                "mimeType": "text/html+skybridge",
-                "text": html,
-                "_meta": {
-                    "openai/widgetAccessible": True,
-                    "openai/widgetPrefersBorder": True,
-                    "openai/widgetCSP": {
-                        "connect_domains": [],
-                        "resource_domains": [],
-                    },
-                },
-            }
-        ]
-    }
-
-
-# Tools (return _meta.openai/outputTemplate so ChatGPT renders the widget)
-
-@mcp.tool()
-def render_library() -> dict:
-    """
-    Show the research library: returns the current list of papers (title, id, note counts).
-    Use when the user asks to view or refresh the library.
-    """
-    return {
-        "content": [],
-        "structuredContent": render_library_structured(),
-        "_meta": {
-            "openai/outputTemplate": TEMPLATE_URI,
-            "openai/toolInvocation/invoking": "Loading library…",
-            "openai/toolInvocation/invoked": "Library loaded.",
-        },
-    }
-
-
-@mcp.tool()
-async def add_paper_tool(input_str: str, source_url: str | None = None) -> dict:
-    """
-    Add a paper to the library by DOI, direct PDF URL, or landing-page URL.
-    Indexes pages for later chunk access. Returns updated library view.
-    Use when the user provides a DOI/URL and wants it added and indexed.
-    """
-    res = await add_paper(input_str, source_url)
-    return {
-        "content": [{"type": "text", "text": f"Added: {res['title']}"}],
-        "structuredContent": render_library_structured(),
-        "_meta": {
-            "openai/outputTemplate": TEMPLATE_URI,
-            "openai/toolInvocation/invoking": "Working…",
-            "openai/toolInvocation/invoked": "Done.",
-        },
-    }
-
-
-@mcp.tool()
-def index_paper_tool(paper_id: int) -> dict:
-    """
-    List all indexed sections for a paper (ids + page numbers).
-    Use to browse chunks before requesting a specific chunk or summary.
-    """
-    return {
-        "content": [],
-        "structuredContent": index_paper(paper_id),
-        "_meta": {
-            "openai/outputTemplate": TEMPLATE_URI,
-            "openai/toolInvocation/invoking": "Working…",
-            "openai/toolInvocation/invoked": "Done.",
-        },
-    }
-
-
-@mcp.tool()
-def get_paper_chunk_tool(section_id: int) -> dict:
-    """
-    Fetch the text of a specific section/chunk by id.
-    Use when the user asks to read a particular page/chunk.
-    """
-    return {
-        "content": [],
-        "structuredContent": get_paper_chunk(section_id),
-        "_meta": {
-            "openai/outputTemplate": TEMPLATE_URI,
-            "openai/toolInvocation/invoking": "Working…",
-            "openai/toolInvocation/invoked": "Done.",
-        },
-    }
-
-
-@mcp.tool()
-def save_note_tool(paper_id: int, body: str) -> dict:
-    """
-    Save a note attached to a paper.
-    Use when the user dictates or submits a note for a given paper.
-    """
-    return {
-        "content": [],
-        "structuredContent": save_note(paper_id, body),
-        "_meta": {
-            "openai/outputTemplate": TEMPLATE_URI,
-            "openai/toolInvocation/invoking": "Working…",
-            "openai/toolInvocation/invoked": "Done.",
-        },
-    }
-
-
-@mcp.tool()
-def delete_paper_tool(paper_id: int) -> dict:
-    """
-    Remove a paper and its notes/sections from the library.
-    Use when the user asks to delete a paper.
-    """
-    return {
-        "content": [],
-        "structuredContent": delete_paper(paper_id),
-        "_meta": {
-            "openai/outputTemplate": TEMPLATE_URI,
-            "openai/toolInvocation/invoking": "Working…",
-            "openai/toolInvocation/invoked": "Done.",
-        },
-    }
-
-
-def _make_mcp_asgi() -> Tuple[Any, str]:
-    """
-    Return (mcp_asgi_app, mount_where), adapting to the FastMCP version installed.
-
-    - If http_app(path="/mcp") exists, use it and mount at ROOT ("/") because the app
-      internally serves under /mcp.
-    - Else if sse_app(path="/mcp") exists, same.
-    - Else if asgi_app() exists (no path support), mount it under "/mcp".
-    - Else raise a clear error.
-    """
-    # Prefer HTTP transport if available
-    if hasattr(mcp, "http_app"):
-        try:
-            return mcp.http_app(path="/mcp"), "root"
-        except TypeError:
-            # Older signature without 'path'
-            return mcp.http_app(), "mcp"
-
-    # Fall back to SSE transport
-    if hasattr(mcp, "sse_app"):
-        try:
-            return mcp.sse_app(path="/mcp"), "root"
-        except TypeError:
-            return mcp.sse_app(), "mcp"
-
-    if hasattr(mcp, "asgi_app"):
-        return mcp.asgi_app(), "mcp"
-
-    raise RuntimeError(
-        "FastMCP does not expose http_app, sse_app, or asgi_app. "
-        "Please upgrade the 'mcp' package (pip install -U mcp)."
+    style_block = f"<style>{WIDGET_CSS}</style>\n" if WIDGET_CSS else ""
+    script_body = WIDGET_JS.replace("</script>", "<\\/script>")
+    return (
+        '<div id="root"></div>\n'
+        f"{style_block}"
+        f"<script>\n{script_body}\n</script>"
     )
 
 
-def build_asgi():
-    """
-    Build a Starlette app and mount the MCP ASGI app in a way that works across
-    FastMCP versions.
-    """
-    mcp_app, mount_where = _make_mcp_asgi()
+# Tools
 
-    # Propagate MCP lifespan if present (ensures sessions initialize correctly)
-    lifespan = getattr(mcp_app, "lifespan", None)
-    app = Starlette(lifespan=lifespan) if lifespan else Starlette()
+TOOL_META = {
+    "openai/outputTemplate": TEMPLATE_URI,
+    "openai/widgetAccessible": True,
+}
 
-    # CORS: open during dev
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+def _tool_result(structured: Dict[str, Any], message: str) -> CallToolResult:
+    """Common helper to attach widget metadata to every tool response."""
+    return CallToolResult(
+        content=[TextContent(type="text", text=message)],
+        structuredContent=structured,
+        meta=TOOL_META,
     )
 
-    if mount_where == "root":
-        app.mount("/", mcp_app)
-    else:
-        app.mount("/mcp", mcp_app)
+@mcp.tool(meta=TOOL_META)
+def render_library() -> CallToolResult:
+    """Render the research library (papers with note counts)."""
+    data = render_library_structured()
+    count = len(data.get("papers", []))
+    plural = "papers" if count != 1 else "paper"
+    return _tool_result(data, f"Showing {count} {plural} in your library.")
 
-    return app
+@mcp.tool(meta=TOOL_META)
+async def add_paper_tool(input_str: str, source_url: str | None = None) -> CallToolResult:
+    """Add a paper by DOI/URL/PDF, index it, then refresh the library."""
+    await add_paper(input_str, source_url)
+    return _tool_result(render_library_structured(), "Added paper and refreshed library.")
 
+@mcp.tool(meta=TOOL_META)
+def index_paper_tool(paper_id: int) -> CallToolResult:
+    return _tool_result(index_paper(paper_id), "Indexed sections listed above.")
+
+@mcp.tool(meta=TOOL_META)
+def get_paper_chunk_tool(section_id: int) -> CallToolResult:
+    return _tool_result(get_paper_chunk(section_id), "Chunk content shown above.")
+
+
+def _gather_excerpts(paper_id: int) -> Tuple[Dict[str, Any] | None, list[str]]:
+    with get_conn() as conn:
+        paper = conn.execute("SELECT id, title FROM papers WHERE id=?", (paper_id,)).fetchone()
+        if not paper:
+            return None, []
+        sections = conn.execute(
+            "SELECT page_no, text FROM sections WHERE paper_id=? ORDER BY page_no ASC",
+            (paper_id,),
+        ).fetchall()
+
+    excerpts: list[str] = []
+    total_chars = 0
+    max_chars = 12000
+    for row in sections:
+        text = (row["text"] or "").strip()
+        if not text:
+            continue
+        snippet = f"[Page {row['page_no']}] {text}"
+        if total_chars + len(snippet) > max_chars:
+            remaining = max_chars - total_chars
+            if remaining <= 0:
+                break
+            snippet = snippet[:remaining]
+        excerpts.append(snippet)
+        total_chars += len(snippet)
+        if total_chars >= max_chars:
+            break
+    return dict(paper), excerpts
+
+
+def _local_summary(title: str, excerpts: list[str]) -> Tuple[str, list[str], list[str]]:
+    text = " ".join(excerpts)
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    summary_sentences: list[str] = []
+    word_count = 0
+    for s in sentences:
+        summary_sentences.append(s)
+        word_count += len(s.split())
+        if word_count >= 260:
+            break
+    if not summary_sentences:
+        summary_sentences = sentences[:5]
+    summary_words = " ".join(summary_sentences).split()
+    summary_text = " ".join(summary_words[:400])
+
+    remaining_sentences = sentences[len(summary_sentences):]
+    bullets: list[str] = []
+    for s in remaining_sentences:
+        if len(bullets) >= 5:
+            break
+        bullets.append(s)
+    if not bullets and summary_sentences:
+        bullets = summary_sentences[: min(3, len(summary_sentences))]
+
+    limitations = [
+        "Refer to the full paper for methodology details beyond this extract.",
+        "Automated summary may omit nuanced results or caveats.",
+        "Validate findings against the paper's original figures and discussion.",
+    ]
+
+    return summary_text, bullets, limitations
+
+
+def _compose_note(summary_text: str, bullets: list[str], limitations: list[str]) -> str:
+    body_parts: list[str] = [summary_text.strip()]
+    cleaned_bullets = [line.lstrip("- ").strip() for line in bullets if line.strip()]
+    if cleaned_bullets:
+        body_parts.append(
+            "Key takeaways:\n" + "\n".join(f"- {line}" for line in cleaned_bullets[:5])
+        )
+    cleaned_limits = [line.lstrip("- ").strip() for line in limitations if line.strip()]
+    if cleaned_limits:
+        body_parts.append(
+            "Limitations:\n" + "\n".join(f"- {line}" for line in cleaned_limits[:3])
+        )
+    return "\n\n".join(part for part in body_parts if part).strip()
+
+class SummarySchema(BaseModel):
+    summary: str = Field(..., description="250-400 word narrative summary")
+    bullets: str | None = Field(
+        None,
+        description="Five key takeaways, one per line starting with '- '",
+    )
+    limitations: str | None = Field(
+        None,
+        description="Three limitations or open questions, one per line starting with '- '",
+    )
+
+@mcp.tool(meta=TOOL_META)
+async def summarize_paper_tool(paper_id: int, context: Context) -> CallToolResult:
+    """Generate a summary for the paper and persist it as a note."""
+    paper, excerpts = _gather_excerpts(paper_id)
+    if not paper:
+        return _tool_result(render_library_structured(), "Paper not found.")
+    if not excerpts:
+        return _tool_result(render_library_structured(), "No indexed text available to summarize.")
+
+    summary_text = ""
+    bullets: list[str] = []
+    limitations: list[str] = []
+    used_fallback = False
+
+    try:
+        prompt = (
+            "You are drafting a concise research summary using the provided excerpts. "
+            "Use only the supplied text; do not invent facts. "
+            "Return the required fields only.\n\n"
+            f"Paper title: {paper['title']}\n"
+            "Return fields:\n"
+            "- summary: 250-400 word prose overview.\n"
+            "- bullets: five key takeaways, each on its own line starting with '- '.\n"
+            "- limitations: three limitations or open questions, each on its own line starting with '- '.\n\n"
+            "Excerpts:\n-----\n"
+            + "\n\n".join(excerpts)
+        )
+        result = await context.elicit(message=prompt, schema=SummarySchema)
+        if result.action == "accept":
+            data = result.data
+            summary_text = data.summary.strip()
+            bullets = [line.strip() for line in (data.bullets or "").splitlines() if line.strip()]
+            limitations = [
+                line.strip() for line in (data.limitations or "").splitlines() if line.strip()
+            ]
+        else:
+            used_fallback = True
+    except Exception:
+        used_fallback = True
+
+    if used_fallback or not summary_text:
+        summary_text, bullets, limitations = _local_summary(paper["title"], excerpts)
+
+    note_body = _compose_note(summary_text, bullets, limitations)
+    if used_fallback:
+        note_body = (
+            "*Automated extractive summary (model assistance unavailable).*\n\n"
+            + note_body
+        )
+
+    save_note(paper_id, note_body, title=f"Summary — {paper['title']}")
+    return _tool_result(render_library_structured(), "Summary saved to notes.")
+
+@mcp.tool(meta=TOOL_META)
+def save_note_tool(
+    paper_id: int,
+    body: str | None = None,
+    title: str | None = None,
+    summary: str | None = None,
+) -> CallToolResult:
+    """Persist a note for a paper (body or summary text required)."""
+    text = body or summary
+    if not text:
+        raise ValueError("Provide note text via 'body' or 'summary'.")
+    save_note(paper_id, text, title)
+    return _tool_result(render_library_structured(), "Saved note.")
+
+@mcp.tool(meta=TOOL_META)
+def delete_paper_tool(paper_id: int) -> CallToolResult:
+    delete_paper(paper_id)
+    return _tool_result(render_library_structured(), "Deleted paper.")
+
+# =============================================================================
+# Start the server — built-in runner (no Starlette/Uvicorn)
+# =============================================================================
+def run_server() -> None:
+    # Prefer the modern signature; fall back for older mcp versions.
+    try:
+        mcp.run(transport="streamable-http", path="/mcp", stateless_http=True)
+        return
+    except TypeError:
+        try:
+            mcp.run(transport="streamable-http", path="/mcp")
+            return
+        except TypeError:
+            mcp.run(transport="streamable-http")
 
 if __name__ == "__main__":
-    uvicorn.run(build_asgi(), host="127.0.0.1", port=8000)
+    run_server()
