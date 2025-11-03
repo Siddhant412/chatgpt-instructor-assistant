@@ -1,20 +1,25 @@
 from __future__ import annotations
+
+import json
 import re
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Optional, Tuple, List
+
 from pydantic import BaseModel, Field
 from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.server import Context
+from mcp.server.fastmcp.server import Context  # kept for compatibility (fallback summarize)
 from mcp.types import CallToolResult, TextContent
 
 from server.db import init_db, get_conn
 from server.tools.render_library import render_library_structured
-from server.tools.add_paper import add_paper
-from server.tools.index_paper import index_paper
-from server.tools.get_paper_chunk import get_paper_chunk
-from server.tools.save_note import save_note
-from server.tools.delete_paper import delete_paper
+from server.tools.add_paper import add_paper as add_paper_impl
+from server.tools.index_paper import index_paper as index_paper_impl
+from server.tools.get_paper_chunk import get_paper_chunk as get_paper_chunk_impl
+from server.tools.save_note import save_note as save_note_impl
+from server.tools.delete_paper import delete_paper as delete_paper_impl  # not used directly; we do atomic helper
 
+
+# Load widget bundle
 
 DIST_DIR = (Path(__file__).parent.parent / "web" / "dist")
 
@@ -32,19 +37,59 @@ else:
     if alt.exists():
         WIDGET_JS = alt.read_text(encoding="utf-8")
     else:
-        WIDGET_JS = _read_first(["*.js", "assets/*.js"])
+        WIDGET_JS = _read_first(["*.js", "assets/*.js"]) or ""
         if not WIDGET_JS:
-            WIDGET_JS = ""
             print("[WARN] No web/dist/widget.js found. Run: cd web && npm i && npm run build")
 
 WIDGET_CSS = _read_first(["*.css", "assets/*.css"])
+
+
+def _ensure_notes_fk_set_null() -> None:
+    """
+    Ensure notes.paper_id is nullable and FK uses ON DELETE SET NULL.
+    If your schema already has it, this is a no-op.
+    """
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='notes'"
+        ).fetchone()
+        if not row:
+            return  # created elsewhere by init_db
+        ddl = row[0] or ""
+        if "FOREIGN KEY" in ddl and "ON DELETE SET NULL" in ddl:
+            return
+
+        print("[db] Migrating notes FK to ON DELETE SET NULL …", flush=True)
+        conn.execute("PRAGMA foreign_keys=OFF")
+        conn.execute("BEGIN")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS notes_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                paper_id INTEGER NULL,
+                title TEXT,
+                body TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY(paper_id) REFERENCES papers(id) ON DELETE SET NULL
+            );
+        """)
+        conn.execute("""
+            INSERT INTO notes_new (id, paper_id, title, body, created_at)
+            SELECT id, paper_id, title, body, created_at FROM notes;
+        """)
+        conn.execute("DROP TABLE IF EXISTS notes;")
+        conn.execute("ALTER TABLE notes_new RENAME TO notes;")
+        conn.execute("COMMIT")
+        conn.execute("PRAGMA foreign_keys=ON")
+        print("[db] Migration complete.", flush=True)
+
+init_db()
+_ensure_notes_fk_set_null()
+
 
 # MCP server
 
 mcp = FastMCP(name="research-notes-py")
 TEMPLATE_URI = "ui://widget/research-notes.html"
-
-init_db()
 
 @mcp.resource(
     TEMPLATE_URI,
@@ -55,9 +100,6 @@ init_db()
     },
 )
 def research_notes_widget() -> str:
-    """
-    Return an HTML fragment rendered in the ChatGPT Apps UI.
-    """
     style_block = f"<style>{WIDGET_CSS}</style>\n" if WIDGET_CSS else ""
     script_body = WIDGET_JS.replace("</script>", "<\\/script>")
     return (
@@ -66,264 +108,266 @@ def research_notes_widget() -> str:
         f"<script>\n{script_body}\n</script>"
     )
 
+META_UI = {"openai/outputTemplate": TEMPLATE_URI, "openai/widgetAccessible": True}
+META_SILENT = {"openai/widgetAccessible": False}
+
+def _ui_result(structured: Dict[str, Any], msg: str) -> CallToolResult:
+    return CallToolResult(
+        content=[TextContent(type="text", text=msg)],
+        structuredContent=structured,
+        meta=META_UI,
+    )
+
+def _text_result(text: str) -> CallToolResult:
+    # Silent text payload for the model to read/parse. no widget refresh.
+    return CallToolResult(
+        content=[TextContent(type="text", text=text)],
+        meta=META_SILENT,
+    )
+
+
+def _delete_paper_and_detach(paper_id: int) -> tuple[dict[str, Any], str]:
+    """
+    Detach notes (paper_id=NULL), delete sections, then delete the paper.
+    """
+    msg = ""
+    with get_conn() as conn:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("BEGIN")
+        # Keep notes
+        conn.execute("UPDATE notes SET paper_id=NULL WHERE paper_id=?", (paper_id,))
+        # Remove sections
+        conn.execute("DELETE FROM sections WHERE paper_id=?", (paper_id,))
+        # Delete paper
+        cur = conn.execute("DELETE FROM papers WHERE id=?", (paper_id,))
+        deleted = cur.rowcount or 0
+        conn.execute("COMMIT")
+        msg = "Deleted paper (notes retained)." if deleted else f"Paper {paper_id} not found."
+    return render_library_structured(), msg
+
 
 # Tools
 
-TOOL_META = {
-    "openai/outputTemplate": TEMPLATE_URI,
-    "openai/widgetAccessible": True,
-}
-
-def _tool_result(structured: Dict[str, Any], message: str) -> CallToolResult:
-    """Common helper to attach widget metadata to every tool response."""
-    return CallToolResult(
-        content=[TextContent(type="text", text=message)],
-        structuredContent=structured,
-        meta=TOOL_META,
-    )
-
-@mcp.tool(meta=TOOL_META)
+@mcp.tool(name="render_library", meta=META_UI)
 def render_library() -> CallToolResult:
-    """Render the research library (papers with note counts)."""
     data = render_library_structured()
-    count = len(data.get("papers", []))
-    plural = "papers" if count != 1 else "paper"
-    return _tool_result(data, f"Showing {count} {plural} in your library.")
+    c = len(data.get("papers", []))
+    return _ui_result(data, f"Showing {c} {'papers' if c != 1 else 'paper'} in your library.")
 
-@mcp.tool(meta=TOOL_META)
-async def add_paper_tool(input_str: str, source_url: str | None = None) -> CallToolResult:
-    """Add a paper by DOI/URL/PDF, index it, then refresh the library."""
-    await add_paper(input_str, source_url)
-    return _tool_result(render_library_structured(), "Added paper and refreshed library.")
+@mcp.tool(name="add_paper", meta=META_UI)
+async def add_paper(url: str) -> CallToolResult:
+    # TS widget sends { url }
+    await add_paper_impl(url, url)
+    return _ui_result(render_library_structured(), "Added paper and refreshed library.")
 
-@mcp.tool(meta=TOOL_META)
-def index_paper_tool(paper_id: int) -> CallToolResult:
-    return _tool_result(index_paper(paper_id), "Indexed sections listed above.")
+@mcp.tool(name="index_paper", meta=META_SILENT)
+def index_paper(paperId: int | str) -> CallToolResult:
+    payload = index_paper_impl(int(paperId))  # returns sections listing etc.
+    return _text_result(json.dumps(payload, ensure_ascii=False))
 
-@mcp.tool(meta=TOOL_META)
-def get_paper_chunk_tool(section_id: int) -> CallToolResult:
-    return _tool_result(get_paper_chunk(section_id), "Chunk content shown above.")
+@mcp.tool(name="get_paper_chunk", meta=META_SILENT)
+def get_paper_chunk(paperId: int | str, sectionId: int | str) -> CallToolResult:
+    chunk = get_paper_chunk_impl(int(sectionId))  # { id, paper_id, page_no, text }
+    return _text_result((chunk or {}).get("text", "") or "")
+
+@mcp.tool(name="save_note", meta=META_UI)
+def save_note(paperId: int | str, title: str, summary: str) -> CallToolResult:
+    save_note_impl(int(paperId), summary, title)
+    return _ui_result(render_library_structured(), "Saved note.")
+
+@mcp.tool(name="delete_paper", meta=META_UI)
+def delete_paper(paperId: int | str) -> CallToolResult:
+    pid = int(paperId)
+    structured, msg = _delete_paper_and_detach(pid)
+    return _ui_result(structured, msg)
 
 
-def _gather_excerpts(paper_id: int) -> Tuple[Dict[str, Any] | None, list[str]]:
+# Notes tools for independent editor
+
+@mcp.tool(name="list_notes_tool", meta=META_UI)
+def list_notes_tool() -> CallToolResult:
+    """Return ALL notes (newest first) with optional joined paper title."""
     with get_conn() as conn:
-        paper = conn.execute("SELECT id, title FROM papers WHERE id=?", (paper_id,)).fetchone()
-        if not paper:
-            return None, []
-        sections = conn.execute(
-            "SELECT page_no, text FROM sections WHERE paper_id=? ORDER BY page_no ASC",
-            (paper_id,),
-        ).fetchall()
+        rows = conn.execute("""
+            SELECT n.id, n.paper_id, n.title, n.body, n.created_at,
+                   p.title AS paper_title
+            FROM notes n
+            LEFT JOIN papers p ON p.id = n.paper_id
+            ORDER BY datetime(n.created_at) DESC, n.id DESC
+        """).fetchall()
+    structured = render_library_structured()
+    structured["notes"] = [dict(r) for r in rows]
+    return _ui_result(structured, f"Loaded {len(structured['notes'])} notes.")
 
-    excerpts: list[str] = []
-    total_chars = 0
-    max_chars = 12000
-    for row in sections:
-        text = (row["text"] or "").strip()
-        if not text:
-            continue
-        snippet = f"[Page {row['page_no']}] {text}"
-        if total_chars + len(snippet) > max_chars:
-            remaining = max_chars - total_chars
-            if remaining <= 0:
-                break
-            snippet = snippet[:remaining]
-        excerpts.append(snippet)
-        total_chars += len(snippet)
-        if total_chars >= max_chars:
-            break
-    return dict(paper), excerpts
-
-
-def _local_summary(title: str, excerpts: list[str]) -> Tuple[str, list[str], list[str]]:
-    text = " ".join(excerpts)
-    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
-    summary_sentences: list[str] = []
-    word_count = 0
-    for s in sentences:
-        summary_sentences.append(s)
-        word_count += len(s.split())
-        if word_count >= 260:
-            break
-    if not summary_sentences:
-        summary_sentences = sentences[:5]
-    summary_words = " ".join(summary_sentences).split()
-    summary_text = " ".join(summary_words[:400])
-
-    remaining_sentences = sentences[len(summary_sentences):]
-    bullets: list[str] = []
-    for s in remaining_sentences:
-        if len(bullets) >= 5:
-            break
-        bullets.append(s)
-    if not bullets and summary_sentences:
-        bullets = summary_sentences[: min(3, len(summary_sentences))]
-
-    limitations = [
-        "Refer to the full paper for methodology details beyond this extract.",
-        "Automated summary may omit nuanced results or caveats.",
-        "Validate findings against the paper's original figures and discussion.",
-    ]
-
-    return summary_text, bullets, limitations
-
-
-def _compose_note(summary_text: str, bullets: list[str], limitations: list[str]) -> str:
-    body_parts: list[str] = [summary_text.strip()]
-    cleaned_bullets = [line.lstrip("- ").strip() for line in bullets if line.strip()]
-    if cleaned_bullets:
-        body_parts.append(
-            "Key takeaways:\n" + "\n".join(f"- {line}" for line in cleaned_bullets[:5])
-        )
-    cleaned_limits = [line.lstrip("- ").strip() for line in limitations if line.strip()]
-    if cleaned_limits:
-        body_parts.append(
-            "Limitations:\n" + "\n".join(f"- {line}" for line in cleaned_limits[:3])
-        )
-    return "\n\n".join(part for part in body_parts if part).strip()
-
-class SummarySchema(BaseModel):
-    summary: str = Field(..., description="250-400 word narrative summary")
-    bullets: str | None = Field(
-        None,
-        description="Five key takeaways, one per line starting with '- '",
-    )
-    limitations: str | None = Field(
-        None,
-        description="Three limitations or open questions, one per line starting with '- '",
-    )
-
-@mcp.tool(meta=TOOL_META)
-async def summarize_paper_tool(paper_id: int, context: Context) -> CallToolResult:
-    """Generate a summary for the paper and persist it as a note (title = paper title)."""
-    paper, excerpts = _gather_excerpts(paper_id)
-    if not paper:
-        return _tool_result(render_library_structured(), "Paper not found.")
-    if not excerpts:
-        return _tool_result(render_library_structured(), "No indexed text available to summarize.")
-
-    summary_text = ""
-    bullets: list[str] = []
-    limitations: list[str] = []
-    used_fallback = False
-
-    try:
-        prompt = (
-            "You are drafting a concise research summary using the provided excerpts. "
-            "Use only the supplied text; do not invent facts. "
-            "Return the required fields only.\n\n"
-            f"Paper title: {paper['title']}\n"
-            "Return fields:\n"
-            "- summary: 250-400 word prose overview.\n"
-            "- bullets: five key takeaways, each on its own line starting with '- '.\n"
-            "- limitations: three limitations or open questions, each on its own line starting with '- '.\n\n"
-            "Excerpts:\n-----\n"
-            + "\n\n".join(excerpts)
-        )
-        result = await context.elicit(message=prompt, schema=SummarySchema)
-        if result.action == "accept":
-            data = result.data
-            summary_text = data.summary.strip()
-            bullets = [line.strip() for line in (data.bullets or "").splitlines() if line.strip()]
-            limitations = [
-                line.strip() for line in (data.limitations or "").splitlines() if line.strip()
-            ]
-        else:
-            used_fallback = True
-    except Exception:
-        used_fallback = True
-
-    if used_fallback or not summary_text:
-        summary_text, bullets, limitations = _local_summary(paper["title"], excerpts)
-
-    note_body = _compose_note(summary_text, bullets, limitations)
-    if used_fallback:
-        note_body = (
-            "*Automated extractive summary (model assistance unavailable).*\n\n"
-            + note_body
-        )
-
-    save_note(paper_id, note_body, title=(paper["title"] or "Paper Summary"))
-    return _tool_result(render_library_structured(), "Summary saved to notes.")
-
-
-# Note CRUD tools
-
-@mcp.tool(meta=TOOL_META)
+@mcp.tool(name="save_note_tool", meta=META_UI)
 def save_note_tool(
-    paper_id: int,
-    body: str | None = None,
-    title: str | None = None,
-    summary: str | None = None,
-    note_id: int | None = None,
+    paper_id: Optional[int] = None,
+    body: Optional[str] = None,
+    title: Optional[str] = None,
+    summary: Optional[str] = None,
+    note_id: Optional[int] = None,
 ) -> CallToolResult:
     """
-    Create or update a note for a paper.
-
-    - If `note_id` is provided: update that note's title/body.
-    - Else: create a new note (uses `title` and `body`/`summary`).
-    Returns the refreshed library AND the updated/created note in structuredContent['note'].
+    Create/update a note for the Editor.
+    - Create: omit note_id. paper_id may be None (independent note).
+    - Update: provide note_id; paper_id optional (preserves if omitted).
+    Returns: library + 'note' (the created/updated row).
     """
-    text = body or summary
-    if note_id is not None:
-        if text is None and title is None:
-            raise ValueError("For updates, provide at least a new title or body/summary.")
-        with get_conn() as conn:
-            # Read old values to support partial updates
-            row = conn.execute("SELECT title, body FROM notes WHERE id=? AND paper_id=?", (note_id, paper_id)).fetchone()
-            if not row:
-                structured = render_library_structured()
-                return _tool_result(structured, f"Note {note_id} not found for this paper.")
-            new_title = title if title is not None else (row["title"] or "")
-            new_body = (text if text is not None else (row["body"] or ""))
-            conn.execute(
-                "UPDATE notes SET title = ?, body = ? WHERE id = ? AND paper_id = ?",
-                (new_title, new_body, note_id, paper_id),
-            )
+    text = body if body is not None else summary
+    with get_conn() as conn:
+        if note_id is not None:
+            old = conn.execute("SELECT paper_id, title, body FROM notes WHERE id=?", (note_id,)).fetchone()
+            if not old:
+                return _ui_result(render_library_structured(), f"Note {note_id} not found.")
+            new_title = title if title is not None else (old["title"] or "Untitled")
+            new_body  = text  if text  is not None else (old["body"] or "")
+            new_pid   = paper_id if paper_id is not None else old["paper_id"]
+            conn.execute("UPDATE notes SET paper_id=?, title=?, body=? WHERE id=?", (new_pid, new_title, new_body, note_id))
             conn.commit()
-            note = conn.execute(
-                "SELECT id, paper_id, title, body, created_at FROM notes WHERE id=?",
-                (note_id,),
-            ).fetchone()
-        structured = render_library_structured()
-        if note:
-            structured["note"] = dict(note)
-        return _tool_result(structured, "Updated note.")
-    else:
-        if not text:
-            raise ValueError("Provide note text via 'body' or 'summary'.")
-        # Create via existing helper
-        save_note(paper_id, text, title)
-        # Try to return the newest note for this paper
-        with get_conn() as conn:
-            note = conn.execute(
-                "SELECT id, paper_id, title, body, created_at FROM notes WHERE paper_id=? ORDER BY created_at DESC, id DESC LIMIT 1",
-                (paper_id,),
-            ).fetchone()
-        structured = render_library_structured()
-        if note:
-            structured["note"] = dict(note)
-        return _tool_result(structured, "Saved note.")
+            row = conn.execute("""
+                SELECT n.id, n.paper_id, n.title, n.body, n.created_at, p.title AS paper_title
+                FROM notes n LEFT JOIN papers p ON p.id = n.paper_id
+                WHERE n.id=?
+            """, (note_id,)).fetchone()
+        else:
+            if text is None:
+                raise ValueError("Provide note text via 'body' or 'summary'.")
+            conn.execute(
+                "INSERT INTO notes (paper_id, title, body, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                (paper_id, title or "Untitled", text),
+            )
+            nid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            row = conn.execute("""
+                SELECT n.id, n.paper_id, n.title, n.body, n.created_at, p.title AS paper_title
+                FROM notes n LEFT JOIN papers p ON p.id = n.paper_id
+                WHERE n.id=?
+            """, (nid,)).fetchone()
 
-@mcp.tool(meta=TOOL_META)
+    structured = render_library_structured()
+    if row:
+        structured["note"] = dict(row)
+    return _ui_result(structured, "Saved note.")
+
+@mcp.tool(name="delete_note_tool", meta=META_UI)
 def delete_note_tool(note_id: int) -> CallToolResult:
-    """Delete a single note by id."""
     with get_conn() as conn:
         conn.execute("DELETE FROM notes WHERE id=?", (note_id,))
         conn.commit()
-    return _tool_result(render_library_structured(), "Deleted note.")
-
-@mcp.tool(meta=TOOL_META)
-def delete_paper_tool(paper_id: int) -> CallToolResult:
-    delete_paper(paper_id)
-    return _tool_result(render_library_structured(), "Deleted paper.")
+    return _ui_result(render_library_structured(), "Deleted note.")
 
 
-# =============================================================================
-# Start the server — built-in runner (no Starlette/Uvicorn)
-# =============================================================================
+# Back compatibility aliases
+
+@mcp.tool(name="add_paper_tool", meta=META_UI)
+async def add_paper_tool(input_str: str, source_url: str | None = None) -> CallToolResult:
+    await add_paper_impl(input_str, source_url)
+    return _ui_result(render_library_structured(), "Added paper and refreshed library.")
+
+@mcp.tool(name="index_paper_tool", meta=META_SILENT)
+def index_paper_tool(paper_id: int | str) -> CallToolResult:
+    return index_paper(paper_id)
+
+@mcp.tool(name="get_paper_chunk_tool", meta=META_SILENT)
+def get_paper_chunk_tool(section_id: int | str) -> CallToolResult:
+    # paperId is ignored by the underlying implementation keeping signature compatible
+    return get_paper_chunk(0, section_id)
+
+@mcp.tool(name="delete_paper_tool", meta=META_UI)
+def delete_paper_tool(paper_id: int | str) -> CallToolResult:
+    pid = int(paper_id)
+    structured, msg = _delete_paper_and_detach(pid)
+    return _ui_result(structured, msg)
+
+
+# Minimal fallback summarize tool if sendFollowUpMessage fails
+
+class SummarySchema(BaseModel):
+    summary: str = Field(..., description="250-400 word narrative summary")
+    bullets: str | None = Field(None, description="Five key takeaways, one per line starting with '- '")
+    limitations: str | None = Field(None, description="Three limitations, one per line starting with '- '")
+
+def _local_extractive_summary(excerpts: List[str]) -> Tuple[str, List[str], List[str]]:
+    text = " ".join(excerpts)
+    sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    # take ~260 words
+    acc, wc = [], 0
+    for s in sents:
+        acc.append(s)
+        wc += len(s.split())
+        if wc >= 260:
+            break
+    if not acc:
+        acc = sents[:5]
+    summary = " ".join(" ".join(acc).split()[:400])
+    rest = sents[len(acc):]
+    bullets: List[str] = []
+    for s in rest:
+        if len(bullets) >= 5:
+            break
+        bullets.append(s)
+    if not bullets and acc:
+        bullets = acc[:3]
+    limits = [
+        "Refer to the full paper for methodology details.",
+        "Automated extractive summary may omit key nuances.",
+        "Validate conclusions against original figures and tables.",
+    ]
+    return summary, bullets, limits
+
+def _compose_note(summary: str, bullets: List[str], limits: List[str]) -> str:
+    parts = [summary.strip()]
+    if bullets:
+        parts.append("Key takeaways:\n" + "\n".join(f"- {b.strip()}" for b in bullets[:5]))
+    if limits:
+        parts.append("Limitations:\n" + "\n".join(f"- {l.strip()}" for l in limits[:3]))
+    return "\n\n".join(parts).strip()
+
+@mcp.tool(name="summarize_paper_tool", meta=META_UI)
+def summarize_paper_tool(paper_id: int, context: Context | None = None) -> CallToolResult:
+    """
+    Fallback summarizer: ensures the paper is indexed, pulls a limited amount of text,
+    produces an extractive summary, saves it as a note, and refreshes the library.
+    (Primary path should be sendFollowUpMessage with tools.)
+    """
+    # Ensure indexed (idempotent)
+    try:
+        index_paper_impl(int(paper_id))
+    except Exception:
+        pass
+
+    # Gather up to 9000 chars across sections
+    excerpts: List[str] = []
+    total = 0
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT page_no, text FROM sections WHERE paper_id=? ORDER BY page_no ASC",
+            (paper_id,),
+        ).fetchall()
+        paper = conn.execute("SELECT title FROM papers WHERE id=?", (paper_id,)).fetchone()
+        paper_title = (paper["title"] if paper else "Paper Summary") or "Paper Summary"
+    cap = 9000
+    for r in rows:
+        t = (r["text"] or "").strip()
+        if not t:
+            continue
+        snip = f"[Page {r['page_no']}] {t}"
+        if total + len(snip) > cap:
+            snip = snip[: (cap - total)]
+        excerpts.append(snip)
+        total += len(snip)
+        if total >= cap:
+            break
+
+    summary, bullets, limits = _local_extractive_summary(excerpts)
+    body = "*Automated extractive summary (model follow-up path unavailable).*" + "\n\n" + _compose_note(summary, bullets, limits)
+
+    save_note_impl(int(paper_id), body, f"Summary — {paper_title}")
+    return _ui_result(render_library_structured(), "Summary saved to notes (fallback).")
+
+
+# Run server
+
 def run_server() -> None:
-    # Prefer the modern signature; fall back for older mcp versions.
     try:
         mcp.run(transport="streamable-http", path="/mcp", stateless_http=True)
         return
