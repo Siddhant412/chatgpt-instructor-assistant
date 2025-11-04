@@ -1,3 +1,4 @@
+# server/app.py
 from __future__ import annotations
 
 import json
@@ -7,7 +8,7 @@ from typing import Any, Dict, Optional, Tuple, List
 
 from pydantic import BaseModel, Field
 from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.server import Context  # kept for compatibility (fallback summarize)
+from mcp.server.fastmcp.server import Context  # kept for fallback summarize
 from mcp.types import CallToolResult, TextContent
 
 from server.db import init_db, get_conn
@@ -16,10 +17,10 @@ from server.tools.add_paper import add_paper as add_paper_impl
 from server.tools.index_paper import index_paper as index_paper_impl
 from server.tools.get_paper_chunk import get_paper_chunk as get_paper_chunk_impl
 from server.tools.save_note import save_note as save_note_impl
-from server.tools.delete_paper import delete_paper as delete_paper_impl  # not used directly; we do atomic helper
 
-
+# =====================================================================================
 # Load widget bundle
+# =====================================================================================
 
 DIST_DIR = (Path(__file__).parent.parent / "web" / "dist")
 
@@ -45,20 +46,15 @@ WIDGET_CSS = _read_first(["*.css", "assets/*.css"])
 
 
 def _ensure_notes_fk_set_null() -> None:
-    """
-    Ensure notes.paper_id is nullable and FK uses ON DELETE SET NULL.
-    If your schema already has it, this is a no-op.
-    """
     with get_conn() as conn:
         row = conn.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='notes'"
         ).fetchone()
         if not row:
-            return  # created elsewhere by init_db
+            return
         ddl = row[0] or ""
         if "FOREIGN KEY" in ddl and "ON DELETE SET NULL" in ddl:
             return
-
         print("[db] Migrating notes FK to ON DELETE SET NULL …", flush=True)
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.execute("BEGIN")
@@ -82,11 +78,38 @@ def _ensure_notes_fk_set_null() -> None:
         conn.execute("PRAGMA foreign_keys=ON")
         print("[db] Migration complete.", flush=True)
 
+def _ensure_question_tables() -> None:
+    with get_conn() as conn:
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS question_sets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                prompt TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                set_id INTEGER NOT NULL,
+                kind TEXT NOT NULL,                 -- 'mcq' | 'short_answer' | etc.
+                text TEXT NOT NULL,
+                options_json TEXT,                  -- JSON array for MCQ options
+                answer TEXT,
+                explanation TEXT,
+                reference TEXT,                     -- e.g., 'Page 12' or 'Slide 5'
+                FOREIGN KEY(set_id) REFERENCES question_sets(id) ON DELETE CASCADE
+            );
+        """)
+        conn.commit()
+
 init_db()
 _ensure_notes_fk_set_null()
+_ensure_question_tables()
 
-
+# =====================================================================================
 # MCP server
+# =====================================================================================
 
 mcp = FastMCP(name="research-notes-py")
 TEMPLATE_URI = "ui://widget/research-notes.html"
@@ -119,7 +142,6 @@ def _ui_result(structured: Dict[str, Any], msg: str) -> CallToolResult:
     )
 
 def _text_result(text: str) -> CallToolResult:
-    # Silent text payload for the model to read/parse. no widget refresh.
     return CallToolResult(
         content=[TextContent(type="text", text=text)],
         meta=META_SILENT,
@@ -127,26 +149,21 @@ def _text_result(text: str) -> CallToolResult:
 
 
 def _delete_paper_and_detach(paper_id: int) -> tuple[dict[str, Any], str]:
-    """
-    Detach notes (paper_id=NULL), delete sections, then delete the paper.
-    """
     msg = ""
     with get_conn() as conn:
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("BEGIN")
-        # Keep notes
         conn.execute("UPDATE notes SET paper_id=NULL WHERE paper_id=?", (paper_id,))
-        # Remove sections
         conn.execute("DELETE FROM sections WHERE paper_id=?", (paper_id,))
-        # Delete paper
         cur = conn.execute("DELETE FROM papers WHERE id=?", (paper_id,))
         deleted = cur.rowcount or 0
         conn.execute("COMMIT")
         msg = "Deleted paper (notes retained)." if deleted else f"Paper {paper_id} not found."
     return render_library_structured(), msg
 
-
+# =====================================================================================
 # Tools
+# =====================================================================================
 
 @mcp.tool(name="render_library", meta=META_UI)
 def render_library() -> CallToolResult:
@@ -156,18 +173,17 @@ def render_library() -> CallToolResult:
 
 @mcp.tool(name="add_paper", meta=META_UI)
 async def add_paper(url: str) -> CallToolResult:
-    # TS widget sends { url }
     await add_paper_impl(url, url)
     return _ui_result(render_library_structured(), "Added paper and refreshed library.")
 
 @mcp.tool(name="index_paper", meta=META_SILENT)
 def index_paper(paperId: int | str) -> CallToolResult:
-    payload = index_paper_impl(int(paperId))  # returns sections listing etc.
+    payload = index_paper_impl(int(paperId))
     return _text_result(json.dumps(payload, ensure_ascii=False))
 
 @mcp.tool(name="get_paper_chunk", meta=META_SILENT)
 def get_paper_chunk(paperId: int | str, sectionId: int | str) -> CallToolResult:
-    chunk = get_paper_chunk_impl(int(sectionId))  # { id, paper_id, page_no, text }
+    chunk = get_paper_chunk_impl(int(sectionId))
     return _text_result((chunk or {}).get("text", "") or "")
 
 @mcp.tool(name="save_note", meta=META_UI)
@@ -181,12 +197,32 @@ def delete_paper(paperId: int | str) -> CallToolResult:
     structured, msg = _delete_paper_and_detach(pid)
     return _ui_result(structured, msg)
 
+# Back-compat aliases
+@mcp.tool(name="add_paper_tool", meta=META_UI)
+async def add_paper_tool(input_str: str, source_url: str | None = None) -> CallToolResult:
+    await add_paper_impl(input_str, source_url)
+    return _ui_result(render_library_structured(), "Added paper and refreshed library.")
 
+@mcp.tool(name="index_paper_tool", meta=META_SILENT)
+def index_paper_tool(paper_id: int | str) -> CallToolResult:
+    return index_paper(paper_id)
+
+@mcp.tool(name="get_paper_chunk_tool", meta=META_SILENT)
+def get_paper_chunk_tool(section_id: int | str) -> CallToolResult:
+    return get_paper_chunk(0, section_id)
+
+@mcp.tool(name="delete_paper_tool", meta=META_UI)
+def delete_paper_tool(paper_id: int | str) -> CallToolResult:
+    pid = int(paper_id)
+    structured, msg = _delete_paper_and_detach(pid)
+    return _ui_result(structured, msg)
+
+# =====================================================================================
 # Notes tools for independent editor
+# =====================================================================================
 
 @mcp.tool(name="list_notes_tool", meta=META_UI)
 def list_notes_tool() -> CallToolResult:
-    """Return ALL notes (newest first) with optional joined paper title."""
     with get_conn() as conn:
         rows = conn.execute("""
             SELECT n.id, n.paper_id, n.title, n.body, n.created_at,
@@ -207,12 +243,6 @@ def save_note_tool(
     summary: Optional[str] = None,
     note_id: Optional[int] = None,
 ) -> CallToolResult:
-    """
-    Create/update a note for the Editor.
-    - Create: omit note_id. paper_id may be None (independent note).
-    - Update: provide note_id; paper_id optional (preserves if omitted).
-    Returns: library + 'note' (the created/updated row).
-    """
     text = body if body is not None else summary
     with get_conn() as conn:
         if note_id is not None:
@@ -255,31 +285,122 @@ def delete_note_tool(note_id: int) -> CallToolResult:
         conn.commit()
     return _ui_result(render_library_structured(), "Deleted note.")
 
+# =====================================================================================
+# Question set tools
+# =====================================================================================
 
-# Back compatibility aliases
+@mcp.tool(name="save_question_set", meta=META_UI)
+def save_question_set(prompt: str, items: list[dict]) -> CallToolResult:
+    """
+    The model calls this AFTER reading user-attached files (direct attachments).
+    items[i] JSON shape (validated loosely here):
+      {
+        "kind": "mcq" | "short_answer" | "...",
+        "text": "...",
+        "options": ["A","B","C","D"],      # for mcq; optional otherwise
+        "answer": "...",
+        "explanation": "...",
+        "reference": "Page 12" | "Slide 5" | "..."
+      }
+    """
+    if not isinstance(items, list) or not items:
+        return _ui_result(render_library_structured(), "No questions received.")
 
-@mcp.tool(name="add_paper_tool", meta=META_UI)
-async def add_paper_tool(input_str: str, source_url: str | None = None) -> CallToolResult:
-    await add_paper_impl(input_str, source_url)
-    return _ui_result(render_library_structured(), "Added paper and refreshed library.")
+    # Persist
+    with get_conn() as conn:
+        conn.execute("BEGIN")
+        conn.execute("INSERT INTO question_sets (prompt) VALUES (?)", (prompt,))
+        set_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        for it in items:
+            kind = (it.get("kind") or "").strip().lower() or "short_answer"
+            text = (it.get("text") or "").strip()
+            if not text:
+                # skip empty
+                continue
+            options = it.get("options")
+            options_json = json.dumps(options, ensure_ascii=False) if isinstance(options, list) else None
+            answer = (it.get("answer") or "").strip() or None
+            explanation = (it.get("explanation") or "").strip() or None
+            reference = (it.get("reference") or "").strip() or None
+            conn.execute("""
+                INSERT INTO questions (set_id, kind, text, options_json, answer, explanation, reference)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (set_id, kind, text, options_json, answer, explanation, reference))
+        conn.execute("COMMIT")
 
-@mcp.tool(name="index_paper_tool", meta=META_SILENT)
-def index_paper_tool(paper_id: int | str) -> CallToolResult:
-    return index_paper(paper_id)
+        # Load back with counts
+        header = conn.execute("""
+            SELECT id, prompt, created_at FROM question_sets WHERE id=?
+        """, (set_id,)).fetchone()
+        rows = conn.execute("""
+            SELECT id, set_id, kind, text, options_json, answer, explanation, reference
+            FROM questions WHERE set_id=? ORDER BY id
+        """, (set_id,)).fetchall()
 
-@mcp.tool(name="get_paper_chunk_tool", meta=META_SILENT)
-def get_paper_chunk_tool(section_id: int | str) -> CallToolResult:
-    # paperId is ignored by the underlying implementation keeping signature compatible
-    return get_paper_chunk(0, section_id)
+    structured = render_library_structured()  # keep library intact on push
+    structured["question_set"] = dict(header)
+    structured["questions"] = [
+        {
+            "id": r["id"],
+            "set_id": r["set_id"],
+            "kind": r["kind"],
+            "text": r["text"],
+            "options": json.loads(r["options_json"]) if r["options_json"] else None,
+            "answer": r["answer"],
+            "explanation": r["explanation"],
+            "reference": r["reference"],
+        }
+        for r in rows
+    ]
+    return _ui_result(structured, f"Saved {len(rows)} questions.")
 
-@mcp.tool(name="delete_paper_tool", meta=META_UI)
-def delete_paper_tool(paper_id: int | str) -> CallToolResult:
-    pid = int(paper_id)
-    structured, msg = _delete_paper_and_detach(pid)
-    return _ui_result(structured, msg)
+@mcp.tool(name="list_question_sets_tool", meta=META_UI)
+def list_question_sets_tool(set_id: Optional[int] = None) -> CallToolResult:
+    with get_conn() as conn:
+        heads = conn.execute("""
+            SELECT qs.id, qs.prompt, qs.created_at, COUNT(q.id) AS count
+            FROM question_sets qs
+            LEFT JOIN questions q ON q.set_id = qs.id
+            GROUP BY qs.id
+            ORDER BY datetime(qs.created_at) DESC, qs.id DESC
+        """).fetchall()
 
+        structured = render_library_structured()
+        structured["question_sets"] = [dict(h) for h in heads]
 
-# Minimal fallback summarize tool if sendFollowUpMessage fails
+        if set_id is not None:
+            rows = conn.execute("""
+                SELECT id, set_id, kind, text, options_json, answer, explanation, reference
+                FROM questions WHERE set_id=? ORDER BY id
+            """, (set_id,)).fetchall()
+            structured["question_set"] = next((dict(h) for h in heads if h["id"] == set_id), None)
+            structured["questions"] = [
+                {
+                    "id": r["id"],
+                    "set_id": r["set_id"],
+                    "kind": r["kind"],
+                    "text": r["text"],
+                    "options": json.loads(r["options_json"]) if r["options_json"] else None,
+                    "answer": r["answer"],
+                    "explanation": r["explanation"],
+                    "reference": r["reference"],
+                }
+                for r in rows
+            ]
+    return _ui_result(structured, "Loaded question sets.")
+
+@mcp.tool(name="delete_question_set_tool", meta=META_UI)
+def delete_question_set_tool(set_id: int) -> CallToolResult:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM questions WHERE set_id=?", (set_id,))
+        conn.execute("DELETE FROM question_sets WHERE id=?", (set_id,))
+        conn.commit()
+    structured = render_library_structured()
+    return _ui_result(structured, "Deleted question set.")
+
+# =====================================================================================
+# Minimal fallback summarize tool
+# =====================================================================================
 
 class SummarySchema(BaseModel):
     summary: str = Field(..., description="250-400 word narrative summary")
@@ -289,7 +410,6 @@ class SummarySchema(BaseModel):
 def _local_extractive_summary(excerpts: List[str]) -> Tuple[str, List[str], List[str]]:
     text = " ".join(excerpts)
     sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
-    # take ~260 words
     acc, wc = [], 0
     for s in sents:
         acc.append(s)
@@ -324,18 +444,11 @@ def _compose_note(summary: str, bullets: List[str], limits: List[str]) -> str:
 
 @mcp.tool(name="summarize_paper_tool", meta=META_UI)
 def summarize_paper_tool(paper_id: int, context: Context | None = None) -> CallToolResult:
-    """
-    Fallback summarizer: ensures the paper is indexed, pulls a limited amount of text,
-    produces an extractive summary, saves it as a note, and refreshes the library.
-    (Primary path should be sendFollowUpMessage with tools.)
-    """
-    # Ensure indexed (idempotent)
     try:
         index_paper_impl(int(paper_id))
     except Exception:
         pass
 
-    # Gather up to 9000 chars across sections
     excerpts: List[str] = []
     total = 0
     with get_conn() as conn:
@@ -360,12 +473,12 @@ def summarize_paper_tool(paper_id: int, context: Context | None = None) -> CallT
 
     summary, bullets, limits = _local_extractive_summary(excerpts)
     body = "*Automated extractive summary (model follow-up path unavailable).*" + "\n\n" + _compose_note(summary, bullets, limits)
-
     save_note_impl(int(paper_id), body, f"Summary — {paper_title}")
     return _ui_result(render_library_structured(), "Summary saved to notes (fallback).")
 
-
+# =====================================================================================
 # Run server
+# =====================================================================================
 
 def run_server() -> None:
     try:
