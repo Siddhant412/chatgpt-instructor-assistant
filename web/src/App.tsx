@@ -290,7 +290,7 @@ Use ONLY these tools and do not print the summary:
 - index_paper { "paperId": "${paperId}" }
 - get_paper_chunk { "paperId": "${paperId}", "sectionId": "<section id>" }
 - save_note { "paperId": "${paperId}", "title": ${JSON.stringify(title)}, "summary": "<final note body>" }
-Steps: index, read chunks, write 250–400 word summary + 5 takeaways + 3 limitations; then call save_note. No other tools. No chat output.`;
+Steps: index, read chunks, write 250-400 word summary + 5 takeaways + 3 limitations; then call save_note. No other tools. No chat output.`;
     if (window.openai?.sendFollowUpMessage) {
       await window.openai.sendFollowUpMessage({ prompt });
     } else {
@@ -310,8 +310,8 @@ Steps: index, read chunks, write 250–400 word summary + 5 takeaways + 3 limita
     void window.openai?.sendFollowUpMessage?.({
       prompt: `TEST_MODE:ON
 While Test mode is open:
-- If the user attaches files, DO NOT reply or summarize. Stay silent and wait for the user to press "Generate".
-- Take NO actions until a "Generate" instruction arrives from the UI.`
+- If the user attaches files, DO NOT reply or summarize. Just read the file thoroughly. After reading, stay silent and wait for the user to press "Generate".
+- Take NO any other actions until a "Generate" instruction arrives from the UI.`
     });
     setQuestionSet(null);
     setQuestions([]);
@@ -339,25 +339,47 @@ While Test mode is open:
 You are in TEST_MODE:ON and the user clicked "Generate".
 
 Do exactly this:
-1) Read ONLY the PDF/PPT files the user attached in this chat. Do not summarize them in chat.
-2) Create PRACTICE questions grounded in those files (not for graded/ongoing exams).
-   Each item must include page/slide references and a brief explanation.
-   Item schema:
+1) Read ONLY the PDF/PPT files attached in this chat (this is allowed and NOT a tool call).
+2) Mandatorily create examination questions for college exams, grounded in those files.
+   Each item must follow:
    {
      "kind": "mcq" | "short_answer",
-     "text": "...",
-     "options": ["A","B","C","D"],    // mcq only
-     "answer": "...",
-     "explanation": "1–3 sentences citing the attachment",
+     "text": "question text grounded in the attachment",
+     "options": ["A","B","C","D"],     // for mcq only
+     "answer": "correct option or short answer",
+     "explanation": "1-3 sentences citing the attachment",
      "reference": "Page N" | "Slide N" | "Section ..."
    }
-3) Persist ONLY by calling the tool save_question_set with:
-   { "prompt": ${JSON.stringify(testPrompt)}, "items": [ ... ], "nonce": "${nonceVal}" }
-4) Do NOT print the questions or JSON to chat. Do NOT call any other tool.
-5) If there are no accessible attachments, reply exactly:
-   No attachments found. Please attach your PDF/PPT and press Generate again.
-6) If the save call fails for any reason, reply exactly:
-   Save failed — please try again.
+
+3) If NO attachments are accessible:
+   - Do NOT call any tools.
+   - Reply exactly:
+     No attachments found. Please attach your PDF/PPT and press Generate again.
+   - Then stop.
+
+4) If you CANNOT reliably create any questions from the attachments:
+   - Do NOT call any tools.
+   - Reply exactly:
+     Could not generate questions from the provided material. Please adjust the file or prompt and try again.
+   - Then stop.
+
+5) If you DO have one or more valid questions (items.length > 0):
+   - Call ONLY this tool to persist them:
+     save_question_set with:
+     {
+       "prompt": ${JSON.stringify(testPrompt)},
+       "items": [ ...items... ],
+       "nonce": "${nonceVal}"
+     }
+   - Do NOT call save_question_set tool before you generate the questions!
+   - First generate the questions as per the prompt, and only then call save_question_set.
+   - Do NOT call render_library or any other tools.
+   - Do NOT print the questions or JSON in chat; let the UI read them from storage.
+
+6) If the save_question_set call fails for any reason:
+   - Reply exactly:
+     Save failed — please try again.
+   - Do NOT print the full items or JSON in chat.
 `;
     try {
       if (window.openai?.sendFollowUpMessage) {
