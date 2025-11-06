@@ -9,7 +9,15 @@ const RA_THEME = `
 }
 html, body { background: transparent; }
 .ra-root{ font:14px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial; color:var(--ra-text); }
-.ra-outer{ background:var(--ra-panel); border:1px solid var(--ra-border); border-radius:18px; box-shadow:0 10px 24px var(--ra-elev); padding:20px; max-height:100vh; overflow:hidden; }
+.ra-outer{
+  background:var(--ra-panel);
+  border:1px solid var(--ra-border);
+  border-radius:18px;
+  box-shadow:0 10px 24px var(--ra-elev);
+  padding:20px;
+  max-height:100vh;      /* keep your caps */
+  overflow:hidden;
+}
 .ra-shell{ display:grid; grid-template-columns:1fr 1.2fr; gap:28px; align-items:start; }
 .ra-col-right{ border-left:1px solid var(--ra-divider); padding-left:28px; display:flex; flex-direction:column; min-height:240px; }
 .ra-h1{ font-size:20px; font-weight:700; color:var(--ra-heading); margin:0 0 6px 0; }
@@ -31,7 +39,12 @@ html, body { background: transparent; }
 .ra-list-item .title{ color:var(--ra-heading); font-weight:700; letter-spacing:-0.01em; }
 .ra-note-count{ margin-top:4px; font-size:12px; color:var(--ra-muted); }
 
-.ra-notes-content{ margin-top:8px; overflow:auto; max-height:88vh; padding-right:6px; }
+.ra-notes-content{
+  margin-top:8px;
+  overflow:auto;
+  max-height:88vh;
+  padding-right:6px;
+}
 .ra-note-title{ font-weight:800; color:var(--ra-heading); margin:0 0 4px 0; }
 .ra-note-date{ font-size:12px; color:var(--ra-muted); margin-bottom:10px; }
 .ra-note-body{ white-space:pre-wrap; }
@@ -69,14 +82,13 @@ type NoteRow = { id: number; paper_id: number | null; title?: string | null; bod
 type QuestionItem = {
   id?: number;
   set_id?: number;
-  kind: string;               // 'mcq' | 'short_answer' | ...
+  kind: "mcq" | "short_answer";
   text: string;
-  options?: string[] | null;  // MCQ options
+  options?: string[] | null;
   answer?: string | null;
   explanation?: string | null;
-  reference?: string | null;  // Page/Slide
+  reference?: string | null;
 };
-
 type QuestionSet = { id: number; prompt: string; created_at?: string; count?: number };
 
 declare global {
@@ -93,7 +105,7 @@ declare global {
 
 function normalizeStructured(sc: any): { papers: PaperRow[]; notesByPaper: Record<string, NoteRow[]> } | null {
   if (!sc || typeof sc !== "object") return null;
-  if (!("papers" in sc)) return null; // <— IMPORTANT: don't wipe library when another tool pushes different shape
+  if (!("papers" in sc)) return null;
   const papers = Array.isArray(sc.papers) ? sc.papers : [];
   const raw = sc.notesByPaper && typeof sc.notesByPaper === "object" ? sc.notesByPaper : {};
   const map: Record<string, NoteRow[]> = {};
@@ -110,6 +122,11 @@ function useDebouncedCallback<T extends (...args: any[]) => void>(fn: T, delay: 
 }
 
 export default function App() {
+  // ----- Modes -----
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [testOpen, setTestOpen] = useState(false);
+
+  // ----- Library data -----
   const [data, setData] = useState<{ papers: PaperRow[]; notesByPaper: Record<string, NoteRow[]> }>(() =>
     normalizeStructured(window.openai?.structuredContent) ??
     normalizeStructured(window.openai?.toolOutput?.structuredContent) ?? { papers: [], notesByPaper: {} }
@@ -122,8 +139,7 @@ export default function App() {
   const [addingPaper, setAddingPaper] = useState(false);
   const [addPaperErr, setAddPaperErr] = useState<string | null>(null);
 
-  // Edit Notes mode
-  const [editorOpen, setEditorOpen] = useState(false);
+  // Notes editor
   const [allNotes, setAllNotes] = useState<NoteRow[]>([]);
   const [activeNoteId, setActiveNoteId] = useState<number | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
@@ -131,36 +147,50 @@ export default function App() {
   const [saveState, setSaveState] = useState<"idle"|"saving"|"saved">("idle");
   const [addingNote, setAddingNote] = useState(false);
 
-  // Test Builder mode (Direct attachments)
-  const [testOpen, setTestOpen] = useState(false);
-  const [testPrompt, setTestPrompt] = useState("Generate 10 MCQs (4 options each) and 5 short-answer questions. Include brief explanations and page/slide references.");
+  // Test Builder
+  const [testPrompt, setTestPrompt] = useState("Create practice questions for study (not for graded exams): 10 MCQs (4 options) and 5 short-answer. Include page/slide references and brief explanations.");
   const [questionSet, setQuestionSet] = useState<QuestionSet | null>(null);
   const [questions, setQuestions] = useState<QuestionItem[]>([]);
   const [sets, setSets] = useState<QuestionSet[]>([]);
   const [testBusy, setTestBusy] = useState<"idle"|"generating">("idle");
 
+  // Handshake / nonce (silent, no instructions to the model)
+  const [nonce, setNonce] = useState<string | null>(null);
+  useEffect(() => {
+    (async () => {
+      try {
+        const out = await window.openai?.callTool?.("session_handshake", {});
+        const text = out?.content?.[0]?.text || out?.text || "";
+        const j = (() => { try { return JSON.parse(text || "{}"); } catch { return {}; } })();
+        if (j?.nonce) setNonce(j.nonce);
+      } catch {}
+    })();
+  }, []);
+
   const selectedNotes = useMemo(() => {
     if (selectedPaperId == null) return [];
     return data.notesByPaper[String(selectedPaperId)] ?? [];
   }, [data, selectedPaperId]);
-
   const selectedPaper = useMemo(
     () => data.papers.find(p => p.id === selectedPaperId) ?? null,
     [data, selectedPaperId]
   );
 
-  // subscribe for pushes; keep library only when present; also capture question-set pushes
+  // Structured pushes:
   useEffect(() => {
     const off = window.openai?.onStructuredContent?.((sc: any) => {
-      // 1) library (if provided)
-      const nextLib = normalizeStructured(sc);
-      if (nextLib) {
-        setData(nextLib);
-        if (nextLib.papers.length > 0 && (selectedPaperId == null || !nextLib.papers.some(p => p.id === selectedPaperId))) {
-          setSelectedPaperId(nextLib.papers[0].id);
+      // If in Test mode, ignore library pushes so the UI doesnt jump back
+      if (!testOpen) {
+        const nextLib = normalizeStructured(sc);
+        if (nextLib) {
+          setData(nextLib);
+          setEditorOpen(false);
+          if (nextLib.papers.length > 0 && (selectedPaperId == null || !nextLib.papers.some(p => p.id === selectedPaperId))) {
+            setSelectedPaperId(nextLib.papers[0].id);
+          }
         }
       }
-      // 2) question set payloads (from save_question_set or list_question_sets_tool)
+      // Test data can flow in anytime
       if (sc && typeof sc === "object") {
         if (sc.question_set) setQuestionSet(sc.question_set as QuestionSet);
         if (Array.isArray(sc.questions)) setQuestions(sc.questions as QuestionItem[]);
@@ -168,15 +198,19 @@ export default function App() {
       }
     });
     return () => { if (typeof off === "function") off(); };
-  }, [selectedPaperId]);
+  }, [testOpen, selectedPaperId]);
 
   async function refreshLibrary() {
     const out = await window.openai?.callTool?.("render_library", {});
     const sc = normalizeStructured(out?.structuredContent ?? out);
-    if (sc) setData(sc);
+    if (sc) {
+      setData(sc);
+      setEditorOpen(false);
+      setTestOpen(false);
+    }
   }
 
-  // ---------- Notes editor helpers ----------
+  // ---------- Notes editor ----------
   async function loadAllNotes(): Promise<NoteRow[]> {
     const out = await window.openai?.callTool?.("list_notes_tool", {});
     const notes = Array.isArray(out?.structuredContent?.notes) ? out.structuredContent.notes : [];
@@ -185,6 +219,7 @@ export default function App() {
   }
   function enterEditor(openFirst = true) {
     setEditorOpen(true);
+    setTestOpen(false);
     (async () => {
       const notes = await loadAllNotes();
       if (openFirst && notes.length > 0) {
@@ -200,23 +235,18 @@ export default function App() {
       setSaveState("idle");
     })();
   }
-  function exitEditor() {
-    setEditorOpen(false);
-    setActiveNoteId(null);
-    setSaveState("idle");
-  }
+  function exitEditor() { setEditorOpen(false); setActiveNoteId(null); setSaveState("idle"); }
   function pickNote(n: NoteRow) {
     setActiveNoteId(n.id);
     setDraftTitle(n.title || "");
     setDraftBody(n.body || "");
     setSaveState("idle");
   }
-
   const debouncedAutosave = useDebouncedCallback(async (payload: {title: string; body: string}) => {
     setSaveState("saving");
     try {
       const current = allNotes.find(n => n.id === activeNoteId) || null;
-      const args: any = { title: payload.title, body: payload.body };
+      const args: any = { title: payload.title, body: payload.body, nonce };
       if (activeNoteId != null) args.note_id = activeNoteId;
       if (current && current.paper_id != null) args.paper_id = current.paper_id;
       const res = await window.openai?.callTool?.("save_note_tool", args);
@@ -224,22 +254,19 @@ export default function App() {
       if (note && typeof note.id === "number") setActiveNoteId(note.id);
       setSaveState("saved");
       await loadAllNotes();
-    } catch {
-      setSaveState("idle");
-    }
+    } catch { setSaveState("idle"); }
   }, 700);
-
   function onTitleChange(v: string) { setDraftTitle(v); debouncedAutosave({ title: v, body: draftBody }); }
   function onBodyChange(v: string) { setDraftBody(v); debouncedAutosave({ title: draftTitle, body: v }); }
 
-  // ---------- Papers: add/delete/summarize ----------
+  // ---------- Papers ----------
   async function handleAddPaper() {
     setAddPaperErr(null);
     const val = (addPaperValue || "").trim();
     if (!val) { setAddPaperErr("Paste a DOI, landing page, or PDF link."); return; }
     setAddingPaper(true);
     try {
-      await window.openai?.callTool?.("add_paper", { url: val });
+      await window.openai?.callTool?.("add_paper_tool", { input_str: val });
       setAddPaperValue("");
       setAddPaperOpen(false);
       await refreshLibrary();
@@ -252,35 +279,40 @@ export default function App() {
       setAddingPaper(false);
     }
   }
-
+  async function deleteSelectedPaper() {
+    if (!selectedPaperId) return;
+    await window.openai?.callTool?.("delete_paper_tool", { paper_id: selectedPaperId });
+    await refreshLibrary();
+  }
   async function summarizeViaFollowUp(paperId: number, title: string) {
     const prompt = `
-You are connected to a Research Notes App with these tools (use EXACT names and argument shapes):
+Use ONLY these tools and do not print the summary:
 - index_paper { "paperId": "${paperId}" }
 - get_paper_chunk { "paperId": "${paperId}", "sectionId": "<section id>" }
 - save_note { "paperId": "${paperId}", "title": ${JSON.stringify(title)}, "summary": "<final note body>" }
-
-Steps:
-1) Ensure the paper is indexed once.
-2) Read key sections with get_paper_chunk (sample up to ~12).
-3) Write a 250–400 word narrative + 5 bullets (Key takeaways) + 3 bullets (Limitations).
-4) Call save_note with the complete body. Do not print the summary to chat. Do not call render_library.
-`;
+Steps: index, read chunks, write 250–400 word summary + 5 takeaways + 3 limitations; then call save_note. No other tools. No chat output.`;
     if (window.openai?.sendFollowUpMessage) {
       await window.openai.sendFollowUpMessage({ prompt });
     } else {
       await window.openai?.callTool?.("summarize_paper_tool", { paper_id: paperId });
     }
   }
-
   async function summarizeCurrent() {
     if (!selectedPaperId || !selectedPaper) return;
     await summarizeViaFollowUp(selectedPaperId, selectedPaper.title || "Paper Summary");
   }
 
-  // ---------- Test Builder (Direct attachments) ----------
+  // ---------- Test ----------
   function enterTestBuilder() {
     setTestOpen(true);
+    setEditorOpen(false);
+    // Minimal guardrail: stay silent on attachments; wait for Generate.
+    void window.openai?.sendFollowUpMessage?.({
+      prompt: `TEST_MODE:ON
+While Test mode is open:
+- If the user attaches files, DO NOT reply or summarize. Stay silent and wait for the user to press "Generate".
+- Take NO actions until a "Generate" instruction arrives from the UI.`
+    });
     setQuestionSet(null);
     setQuestions([]);
   }
@@ -288,6 +320,7 @@ Steps:
     setTestOpen(false);
     setQuestionSet(null);
     setQuestions([]);
+    void window.openai?.sendFollowUpMessage?.({ prompt: "TEST_MODE:OFF" });
   }
   async function loadQuestionSets(setId?: number) {
     const out = await window.openai?.callTool?.("list_question_sets_tool", typeof setId === "number" ? { set_id: setId } : {});
@@ -298,46 +331,48 @@ Steps:
   }
   async function generateQuestionsFromAttachments() {
     if (!testPrompt.trim()) return;
+    const nonceVal = nonce || "MISSING_NONCE";
     setTestBusy("generating");
+
+    // One-shot directive: read attachments now, save set, no chat output.
     const prompt = `
-You are connected to a Research Notes App that can persist exam questions via the tool:
-- save_question_set { "prompt": "<user prompt>", "items": [ ... ] }
+You are in TEST_MODE:ON and the user clicked "Generate".
 
-The user will attach one or more PDF/PPT files to the most recent user message in this conversation. Read ONLY those attachments to create questions. Then call save_question_set ONCE.
-
-Output rules:
-- Do NOT print questions to chat. Persist them only via save_question_set.
-- Use this JSON item shape EXACTLY (array called "items"):
-  {
-    "kind": "mcq" | "short_answer",
-    "text": "question text",
-    "options": ["A","B","C","D"],   // include only for mcq
-    "answer": "correct option or short answer",
-    "explanation": "why the answer is correct (1-3 sentences), grounded in the attachment text",
-    "reference": "Page N" | "Slide N" | "Section ..."  // cite where it came from
-  }
-
-Constraints:
-- Ground ALL content strictly in the attached files. No outside facts.
-- MCQs must have 1 correct + 3 plausible distractors sourced from the material.
-- If multiple files are attached, you may draw from any/all and indicate references per item.
-
-User prompt (requirements):
-${testPrompt}
-
-Now read the most recent user-attached files and then call:
-save_question_set { "prompt": ${JSON.stringify(testPrompt)}, "items": [ ... ] }
+Do exactly this:
+1) Read ONLY the PDF/PPT files the user attached in this chat. Do not summarize them in chat.
+2) Create PRACTICE questions grounded in those files (not for graded/ongoing exams).
+   Each item must include page/slide references and a brief explanation.
+   Item schema:
+   {
+     "kind": "mcq" | "short_answer",
+     "text": "...",
+     "options": ["A","B","C","D"],    // mcq only
+     "answer": "...",
+     "explanation": "1–3 sentences citing the attachment",
+     "reference": "Page N" | "Slide N" | "Section ..."
+   }
+3) Persist ONLY by calling the tool save_question_set with:
+   { "prompt": ${JSON.stringify(testPrompt)}, "items": [ ... ], "nonce": "${nonceVal}" }
+4) Do NOT print the questions or JSON to chat. Do NOT call any other tool.
+5) If there are no accessible attachments, reply exactly:
+   No attachments found. Please attach your PDF/PPT and press Generate again.
+6) If the save call fails for any reason, reply exactly:
+   Save failed — please try again.
 `;
     try {
       if (window.openai?.sendFollowUpMessage) {
         await window.openai.sendFollowUpMessage({ prompt });
       }
-      // The tool call will push structuredContent with question_set + questions.
-      // Optionally refresh history list:
-      setTimeout(() => loadQuestionSets(), 300);
+      // Pull newly saved set
+      setTimeout(() => loadQuestionSets(), 500);
     } finally {
       setTestBusy("idle");
     }
+  }
+  async function deleteQuestionSet(id: number) {
+    await window.openai?.callTool?.("delete_question_set_tool", { set_id: id, nonce });
+    setQuestionSet(null); setQuestions([]);
+    await loadQuestionSets();
   }
 
   // ---------- Render ----------
@@ -357,15 +392,7 @@ save_question_set { "prompt": ${JSON.stringify(testPrompt)}, "items": [ ... ] }
                   {!addPaperOpen ? (
                     <>
                       <button className="ra-btn link" onClick={refreshLibrary}>Refresh</button>
-                      <button
-                        className="ra-btn soft-danger"
-                        onClick={async () => {
-                          if (!selectedPaperId) return;
-                          await window.openai?.callTool?.("delete_paper_tool", { paper_id: selectedPaperId });
-                          await refreshLibrary();
-                        }}
-                        disabled={!selectedPaperId}
-                      >Delete</button>
+                      <button className="ra-btn soft-danger" onClick={deleteSelectedPaper} disabled={!selectedPaperId}>Delete</button>
                       <button className="ra-btn soft-primary" onClick={() => { setAddPaperOpen(true); setAddPaperErr(null); }}>
                         Add
                       </button>
@@ -409,7 +436,7 @@ save_question_set { "prompt": ${JSON.stringify(testPrompt)}, "items": [ ... ] }
                   <button className="ra-btn link" onClick={refreshLibrary}>Refresh</button>
                   <button className="ra-btn soft-primary" onClick={summarizeCurrent} disabled={!selectedPaperId}>Summarize this paper</button>
                   <button className="ra-btn" onClick={() => enterEditor(true)}>Edit Notes</button>
-                  <button className="ra-btn" onClick={enterTestBuilder}>Create Test Questions</button>
+                  <button className="ra-btn" onClick={enterTestBuilder}>Create Practice Questions</button>
                 </div>
               </div>
 
@@ -429,30 +456,37 @@ save_question_set { "prompt": ${JSON.stringify(testPrompt)}, "items": [ ... ] }
             </section>
           </div>
         ) : editorOpen ? (
-          /* -------------------- Edit Notes Mode -------------------- */
+          /* -------------------- Editor Mode -------------------- */
           <div className="ra-shell">
+            {/* Left: all notes */}
             <section>
               <div className="ra-head">
                 <h1 className="ra-h1">All Notes</h1>
                 <div className="ra-actions">
                   <button className="ra-btn" onClick={exitEditor}>Back</button>
                   <button className="ra-btn" onClick={loadAllNotes}>Refresh</button>
-                  <button className="ra-btn soft-primary" onClick={async () => {
-                    setAddingNote(true);
-                    try {
-                      const res = await window.openai?.callTool?.("save_note_tool", { title: "Untitled", body: "New note" });
-                      const notes = await loadAllNotes();
-                      const newId = res?.structuredContent?.note?.id;
-                      const created = typeof newId === "number" ? notes.find(n => n.id === newId) : notes[0];
-                      if (created) {
-                        setActiveNoteId(created.id);
-                        setDraftTitle(created.title || "Untitled");
-                        setDraftBody(created.body || "");
+                  <button
+                    className="ra-btn soft-primary"
+                    onClick={async () => {
+                      setAddingNote(true);
+                      try {
+                        const res = await window.openai?.callTool?.("save_note_tool", { title: "Untitled", body: "New note", nonce });
+                        const notes = await loadAllNotes();
+                        const newId = res?.structuredContent?.note?.id;
+                        const created = typeof newId === "number" ? notes.find(n => n.id === newId) : notes[0];
+                        if (created) {
+                          setActiveNoteId(created.id);
+                          setDraftTitle(created.title || "Untitled");
+                          setDraftBody(created.body || "");
+                        }
+                      } finally {
+                        setAddingNote(false);
                       }
-                    } finally {
-                      setAddingNote(false);
-                    }
-                  }} disabled={addingNote}>{addingNote ? "Adding…" : "Add"}</button>
+                    }}
+                    disabled={addingNote}
+                  >
+                    {addingNote ? "Adding…" : "Add"}
+                  </button>
                 </div>
               </div>
 
@@ -469,6 +503,7 @@ save_question_set { "prompt": ${JSON.stringify(testPrompt)}, "items": [ ... ] }
               </div>
             </section>
 
+            {/* Right: editor */}
             <section className="ra-col-right">
               <div className="ra-head">
                 <h1 className="ra-h1">Editor</h1>
@@ -476,7 +511,7 @@ save_question_set { "prompt": ${JSON.stringify(testPrompt)}, "items": [ ... ] }
                   <span className="ra-status">{saveState === "saving" ? "Saving…" : saveState === "saved" ? "Saved" : ""}</span>
                   <button className="ra-btn soft-danger" onClick={async () => {
                     if (activeNoteId == null) return;
-                    await window.openai?.callTool?.("delete_note_tool", { note_id: activeNoteId });
+                    await window.openai?.callTool?.("delete_note_tool", { note_id: activeNoteId, nonce });
                     const notes = await loadAllNotes();
                     const first = notes[0];
                     if (first) { setActiveNoteId(first.id); setDraftTitle(first.title || ""); setDraftBody(first.body || ""); }
@@ -496,12 +531,12 @@ save_question_set { "prompt": ${JSON.stringify(testPrompt)}, "items": [ ... ] }
             </section>
           </div>
         ) : (
-          /* -------------------- Test Builder (Direct attachments) -------------------- */
+          /* -------------------- Test Builder -------------------- */
           <div className="ra-shell">
             {/* Left: attach files + prompt */}
             <section>
               <div className="ra-head">
-                <h1 className="ra-h1">Create Test Questions</h1>
+                <h1 className="ra-h1">Create Practice Questions</h1>
                 <div className="ra-actions">
                   <button className="ra-btn" onClick={exitTestBuilder}>Back</button>
                   <button className="ra-btn" onClick={() => loadQuestionSets()}>History</button>
@@ -514,24 +549,13 @@ save_question_set { "prompt": ${JSON.stringify(testPrompt)}, "items": [ ... ] }
               <div className="ra-card" style={{ marginBottom: 12 }}>
                 <div style={{ fontWeight: 700, marginBottom: 6 }}>How it works</div>
                 <div className="ra-status">
-                  1) Click the paperclip in ChatGPT and attach one or more PDF/PPT files.<br/>
-                  2) Then click <b>Generate</b>. The model will read your attachments and save the questions here.
+                  Attach one or more PDF/PPT files via the paperclip in ChatGPT, then click <b>Generate</b>. The model stays silent on upload and saves questions here.
                 </div>
-              </div>
-
-              <div className="ra-card">
-                <div style={{ fontWeight: 700, marginBottom: 6 }}>Prompt</div>
-                <textarea
-                  className="ra-textarea"
-                  value={testPrompt}
-                  onChange={(e) => setTestPrompt(e.target.value)}
-                  placeholder="e.g., 10 MCQs (4 options), 5 short answers; Bloom: Apply; include references"
-                />
               </div>
 
               {sets.length > 0 && (
                 <div className="ra-card" style={{ marginTop: 12 }}>
-                  <div style={{ fontWeight: 700, marginBottom: 6 }}>Recent Question Sets</div>
+                  <div style={{ fontWeight: 700, marginBottom: 6 }}>Recent Practice Sets</div>
                   <div className="ra-test-list">
                     {sets.map(s => (
                       <div key={s.id} className="ra-note-row" onClick={() => loadQuestionSets(s.id)}>
@@ -540,7 +564,6 @@ save_question_set { "prompt": ${JSON.stringify(testPrompt)}, "items": [ ... ] }
                         <div className="d" style={{ marginTop: 4, color: "#374151" }}>{s.prompt}</div>
                       </div>
                     ))}
-                    {sets.length === 0 && <div className="ra-status">No question sets yet.</div>}
                   </div>
                 </div>
               )}
@@ -549,15 +572,12 @@ save_question_set { "prompt": ${JSON.stringify(testPrompt)}, "items": [ ... ] }
             {/* Right: viewer */}
             <section className="ra-col-right">
               <div className="ra-head">
-                <h1 className="ra-h1">Question Set</h1>
+                <h1 className="ra-h1">Practice Set</h1>
                 <div className="ra-actions">
                   {questionSet && (
-                    <button className="ra-btn soft-danger" onClick={async () => {
-                      if (!questionSet) return;
-                      await window.openai?.callTool?.("delete_question_set_tool", { set_id: questionSet.id });
-                      setQuestionSet(null); setQuestions([]);
-                      await loadQuestionSets();
-                    }}>Delete Set</button>
+                    <button className="ra-btn soft-danger" onClick={() => questionSet && deleteQuestionSet(questionSet.id)}>
+                      Delete Set
+                    </button>
                   )}
                 </div>
               </div>
@@ -580,7 +600,7 @@ save_question_set { "prompt": ${JSON.stringify(testPrompt)}, "items": [ ... ] }
                         <div key={q.id ?? idx} className="ra-q">
                           <div style={{ marginBottom: 6 }}>
                             <span className="kind">{q.kind}</span>
-                            {q.reference && <span className="ref">Ref: {q.reference}</span>}
+                            {q.reference && <span className="ref"> &nbsp;Ref: {q.reference}</span>}
                           </div>
                           <div style={{ fontWeight: 700, marginBottom: 6 }}>{idx + 1}. {q.text}</div>
                           {Array.isArray(q.options) && q.options.length > 0 && (

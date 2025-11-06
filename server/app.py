@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, List
 
 from pydantic import BaseModel, Field
 from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.server import Context  # kept for fallback summarize
+from mcp.server.fastmcp.server import Context
 from mcp.types import CallToolResult, TextContent
 
 from server.db import init_db, get_conn
@@ -44,6 +45,9 @@ else:
 
 WIDGET_CSS = _read_first(["*.css", "assets/*.css"])
 
+# =====================================================================================
+# DB init and migrations (notes FK + question tables)
+# =====================================================================================
 
 def _ensure_notes_fk_set_null() -> None:
     with get_conn() as conn:
@@ -92,12 +96,12 @@ def _ensure_question_tables() -> None:
             CREATE TABLE IF NOT EXISTS questions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 set_id INTEGER NOT NULL,
-                kind TEXT NOT NULL,                 -- 'mcq' | 'short_answer' | etc.
+                kind TEXT NOT NULL,
                 text TEXT NOT NULL,
-                options_json TEXT,                  -- JSON array for MCQ options
+                options_json TEXT,
                 answer TEXT,
                 explanation TEXT,
-                reference TEXT,                     -- e.g., 'Page 12' or 'Slide 5'
+                reference TEXT,
                 FOREIGN KEY(set_id) REFERENCES question_sets(id) ON DELETE CASCADE
             );
         """)
@@ -108,7 +112,7 @@ _ensure_notes_fk_set_null()
 _ensure_question_tables()
 
 # =====================================================================================
-# MCP server
+# MCP server + UI resource
 # =====================================================================================
 
 mcp = FastMCP(name="research-notes-py")
@@ -146,6 +150,27 @@ def _text_result(text: str) -> CallToolResult:
         content=[TextContent(type="text", text=text)],
         meta=META_SILENT,
     )
+
+# =====================================================================================
+# UI session nonce (guards mutating tools from generic suggestions)
+# =====================================================================================
+
+_VALID_NONCES: set[str] = set()
+
+@mcp.tool(name="session_handshake", meta=META_SILENT)
+def session_handshake() -> CallToolResult:
+    """
+    Returns a one-time UI nonce. The UI must include this 'nonce' in mutating tool calls.
+    Suggestions that don't know the nonce cannot perform writes.
+    """
+    nonce = secrets.token_hex(16)
+    _VALID_NONCES.add(nonce)
+    return _text_result(json.dumps({"nonce": nonce}))
+
+def _require_nonce(nonce: Optional[str]) -> Optional[str]:
+    if not nonce or nonce not in _VALID_NONCES:
+        return "Action blocked: missing/invalid UI session."
+    return None
 
 
 def _delete_paper_and_detach(paper_id: int) -> tuple[dict[str, Any], str]:
@@ -242,7 +267,12 @@ def save_note_tool(
     title: Optional[str] = None,
     summary: Optional[str] = None,
     note_id: Optional[int] = None,
+    nonce: Optional[str] = None,
 ) -> CallToolResult:
+    err = _require_nonce(nonce)
+    if err:
+        return _ui_result(render_library_structured(), err)
+
     text = body if body is not None else summary
     with get_conn() as conn:
         if note_id is not None:
@@ -261,7 +291,7 @@ def save_note_tool(
             """, (note_id,)).fetchone()
         else:
             if text is None:
-                raise ValueError("Provide note text via 'body' or 'summary'.")
+                return _ui_result(render_library_structured(), "Provide note text via 'body' or 'summary'.")
             conn.execute(
                 "INSERT INTO notes (paper_id, title, body, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
                 (paper_id, title or "Untitled", text),
@@ -279,7 +309,10 @@ def save_note_tool(
     return _ui_result(structured, "Saved note.")
 
 @mcp.tool(name="delete_note_tool", meta=META_UI)
-def delete_note_tool(note_id: int) -> CallToolResult:
+def delete_note_tool(note_id: int, nonce: Optional[str] = None) -> CallToolResult:
+    err = _require_nonce(nonce)
+    if err:
+        return _ui_result(render_library_structured(), err)
     with get_conn() as conn:
         conn.execute("DELETE FROM notes WHERE id=?", (note_id,))
         conn.commit()
@@ -290,23 +323,22 @@ def delete_note_tool(note_id: int) -> CallToolResult:
 # =====================================================================================
 
 @mcp.tool(name="save_question_set", meta=META_UI)
-def save_question_set(prompt: str, items: list[dict]) -> CallToolResult:
-    """
-    The model calls this AFTER reading user-attached files (direct attachments).
-    items[i] JSON shape (validated loosely here):
-      {
-        "kind": "mcq" | "short_answer" | "...",
-        "text": "...",
-        "options": ["A","B","C","D"],      # for mcq; optional otherwise
-        "answer": "...",
-        "explanation": "...",
-        "reference": "Page 12" | "Slide 5" | "..."
-      }
-    """
-    if not isinstance(items, list) or not items:
-        return _ui_result(render_library_structured(), "No questions received.")
+def save_question_set(prompt: str, items: list[dict], nonce: Optional[str] = None) -> CallToolResult:
+    err = _require_nonce(nonce)
+    if err:
+        return CallToolResult(
+            content=[TextContent(type="text", text=err)],
+            structuredContent={"error": err},
+            meta=META_UI,
+        )
 
-    # Persist
+    if not isinstance(items, list) or not items:
+        return CallToolResult(
+            content=[TextContent(type="text", text="No questions received.")],
+            structuredContent={"error": "no_questions"},
+            meta=META_UI,
+        )
+
     with get_conn() as conn:
         conn.execute("BEGIN")
         conn.execute("INSERT INTO question_sets (prompt) VALUES (?)", (prompt,))
@@ -315,7 +347,6 @@ def save_question_set(prompt: str, items: list[dict]) -> CallToolResult:
             kind = (it.get("kind") or "").strip().lower() or "short_answer"
             text = (it.get("text") or "").strip()
             if not text:
-                # skip empty
                 continue
             options = it.get("options")
             options_json = json.dumps(options, ensure_ascii=False) if isinstance(options, list) else None
@@ -328,31 +359,32 @@ def save_question_set(prompt: str, items: list[dict]) -> CallToolResult:
             """, (set_id, kind, text, options_json, answer, explanation, reference))
         conn.execute("COMMIT")
 
-        # Load back with counts
-        header = conn.execute("""
-            SELECT id, prompt, created_at FROM question_sets WHERE id=?
-        """, (set_id,)).fetchone()
+        header = conn.execute("SELECT id, prompt, created_at FROM question_sets WHERE id=?", (set_id,)).fetchone()
         rows = conn.execute("""
             SELECT id, set_id, kind, text, options_json, answer, explanation, reference
             FROM questions WHERE set_id=? ORDER BY id
         """, (set_id,)).fetchall()
 
-    structured = render_library_structured()  # keep library intact on push
-    structured["question_set"] = dict(header)
-    structured["questions"] = [
-        {
-            "id": r["id"],
-            "set_id": r["set_id"],
-            "kind": r["kind"],
-            "text": r["text"],
-            "options": json.loads(r["options_json"]) if r["options_json"] else None,
-            "answer": r["answer"],
-            "explanation": r["explanation"],
-            "reference": r["reference"],
-        }
-        for r in rows
-    ]
-    return _ui_result(structured, f"Saved {len(rows)} questions.")
+    sc = {
+        "question_set": dict(header),
+        "questions": [
+            {
+                "id": r["id"],
+                "set_id": r["set_id"],
+                "kind": r["kind"],
+                "text": r["text"],
+                "options": json.loads(r["options_json"]) if r["options_json"] else None,
+                "answer": r["answer"],
+                "explanation": r["explanation"],
+                "reference": r["reference"],
+            } for r in rows
+        ]
+    }
+    return CallToolResult(
+        content=[TextContent(type="text", text=f"Saved {len(rows)} questions.")],
+        structuredContent=sc,
+        meta=META_UI,
+    )
 
 @mcp.tool(name="list_question_sets_tool", meta=META_UI)
 def list_question_sets_tool(set_id: Optional[int] = None) -> CallToolResult:
@@ -364,17 +396,15 @@ def list_question_sets_tool(set_id: Optional[int] = None) -> CallToolResult:
             GROUP BY qs.id
             ORDER BY datetime(qs.created_at) DESC, qs.id DESC
         """).fetchall()
-
-        structured = render_library_structured()
-        structured["question_sets"] = [dict(h) for h in heads]
+        sc: Dict[str, Any] = {"question_sets": [dict(h) for h in heads]}
 
         if set_id is not None:
             rows = conn.execute("""
                 SELECT id, set_id, kind, text, options_json, answer, explanation, reference
                 FROM questions WHERE set_id=? ORDER BY id
             """, (set_id,)).fetchall()
-            structured["question_set"] = next((dict(h) for h in heads if h["id"] == set_id), None)
-            structured["questions"] = [
+            sc["question_set"] = next((dict(h) for h in heads if h["id"] == set_id), None)
+            sc["questions"] = [
                 {
                     "id": r["id"],
                     "set_id": r["set_id"],
@@ -384,26 +414,39 @@ def list_question_sets_tool(set_id: Optional[int] = None) -> CallToolResult:
                     "answer": r["answer"],
                     "explanation": r["explanation"],
                     "reference": r["reference"],
-                }
-                for r in rows
+                } for r in rows
             ]
-    return _ui_result(structured, "Loaded question sets.")
+    return CallToolResult(
+        content=[TextContent(type="text", text="Loaded question sets.")],
+        structuredContent=sc,
+        meta=META_UI,
+    )
 
 @mcp.tool(name="delete_question_set_tool", meta=META_UI)
-def delete_question_set_tool(set_id: int) -> CallToolResult:
+def delete_question_set_tool(set_id: int, nonce: Optional[str] = None) -> CallToolResult:
+    err = _require_nonce(nonce)
+    if err:
+        return CallToolResult(
+            content=[TextContent(type="text", text=err)],
+            structuredContent={"error": err},
+            meta=META_UI,
+        )
     with get_conn() as conn:
         conn.execute("DELETE FROM questions WHERE set_id=?", (set_id,))
         conn.execute("DELETE FROM question_sets WHERE id=?", (set_id,))
         conn.commit()
-    structured = render_library_structured()
-    return _ui_result(structured, "Deleted question set.")
+    return CallToolResult(
+        content=[TextContent(type="text", text="Deleted question set.")],
+        structuredContent={},  # no library payload
+        meta=META_UI,
+    )
 
 # =====================================================================================
 # Minimal fallback summarize tool
 # =====================================================================================
 
 class SummarySchema(BaseModel):
-    summary: str = Field(..., description="250-400 word narrative summary")
+    summary: str = Field(..., description="250–400 word narrative summary")
     bullets: str | None = Field(None, description="Five key takeaways, one per line starting with '- '")
     limitations: str | None = Field(None, description="Three limitations, one per line starting with '- '")
 
@@ -425,8 +468,6 @@ def _local_extractive_summary(excerpts: List[str]) -> Tuple[str, List[str], List
         if len(bullets) >= 5:
             break
         bullets.append(s)
-    if not bullets and acc:
-        bullets = acc[:3]
     limits = [
         "Refer to the full paper for methodology details.",
         "Automated extractive summary may omit key nuances.",
