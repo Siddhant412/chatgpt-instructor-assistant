@@ -148,7 +148,7 @@ export default function App() {
   const [addingNote, setAddingNote] = useState(false);
 
   // Test Builder
-  const [testPrompt, setTestPrompt] = useState("Create practice questions for study (not for graded exams): 10 MCQs (4 options) and 5 short-answer. Include page/slide references and brief explanations.");
+  const [testPrompt, setTestPrompt] = useState("Create practice questions for graded exams: 10 MCQs (4 options) and 5 short-answer. Include page/slide references and brief explanations.");
   const [questionSet, setQuestionSet] = useState<QuestionSet | null>(null);
   const [questions, setQuestions] = useState<QuestionItem[]>([]);
   const [sets, setSets] = useState<QuestionSet[]>([]);
@@ -310,8 +310,9 @@ Steps: index, read chunks, write 250-400 word summary + 5 takeaways + 3 limitati
     void window.openai?.sendFollowUpMessage?.({
       prompt: `TEST_MODE:ON
 While Test mode is open:
-- If the user attaches files, DO NOT reply or summarize. Just read the file thoroughly. After reading, stay silent and wait for the user to press "Generate".
-- Take NO any other actions until a "Generate" instruction arrives from the UI.`
+- If the user attaches files, DO NOT reply or summarize. Just read the file thoroughly. You can use the tools needed to open and read the file contents. After reading, stay silent and wait for the user to press "Generate".
+- Take NO any other actions until a "Generate" instruction arrives from the UI.
+- Also absolutely make sure that after the user hits generate, you have to generate questions from the uploaded files before calling save_question_set tool.`
     });
     setQuestionSet(null);
     setQuestions([]);
@@ -339,8 +340,8 @@ While Test mode is open:
 You are in TEST_MODE:ON and the user clicked "Generate".
 
 Do exactly this:
-1) Read ONLY the PDF/PPT files attached in this chat (this is allowed and NOT a tool call).
-2) Mandatorily create examination questions for college exams, grounded in those files.
+1) Read ONLY the PDF/PPT files attached in this chat (this is allowed and NOT a tool call). Also, you can use any other tool which is needed to open the file and read the contents.
+2) Mandatorily create examination questions for college exams, grounded in those files before calling the save_question_set tool. Do not rush to call save_question_set tool before generating questions.
    Each item must follow:
    {
      "kind": "mcq" | "short_answer",

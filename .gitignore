@@ -12,6 +12,8 @@ web/dist/
 !server/.env.example
 server/data/**
 server/data/pdfs/**
+server/exports/canvas/**
+!server/exports/canvas/example_question_set.md
 logs/
 *.log
 npm-debug.log*
