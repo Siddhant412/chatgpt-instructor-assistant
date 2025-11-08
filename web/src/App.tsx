@@ -312,7 +312,7 @@ Steps: index, read chunks, write 250-400 word summary + 5 takeaways + 3 limitati
 While Test mode is open:
 - If the user attaches files, DO NOT reply or summarize. Just read the file thoroughly. You can use the tools needed to open and read the file contents. After reading, stay silent and wait for the user to press "Generate".
 - Take NO any other actions until a "Generate" instruction arrives from the UI.
-- Also absolutely make sure that after the user hits generate, you have to generate questions from the uploaded files before calling save_question_set tool.`
+- Also absolutely make sure that after the user hits generate, you have to generate questions from the uploaded files and populate the "items" field with questions before calling save_question_set tool.`
     });
     setQuestionSet(null);
     setQuestions([]);
@@ -339,9 +339,10 @@ While Test mode is open:
     const prompt = `
 You are in TEST_MODE:ON and the user clicked "Generate".
 
-Do exactly this:
+Do exactly this (read all these below instructions very carefully, and you have to follow them in order without any exceptions):
 1) Read ONLY the PDF/PPT files attached in this chat (this is allowed and NOT a tool call). Also, you can use any other tool which is needed to open the file and read the contents.
 2) Mandatorily create examination questions for college exams, grounded in those files before calling the save_question_set tool. Do not rush to call save_question_set tool before generating questions.
+   DO NOT CALL 'save_question_set' BEFORE POPULATING THE 'items' array with appropriate questions. Strictly follow this flow, no exceptions what so ever.
    Each item must follow:
    {
      "kind": "mcq" | "short_answer",
@@ -365,7 +366,7 @@ Do exactly this:
    - Then stop.
 
 5) If you DO have one or more valid questions (items.length > 0):
-   - Call ONLY this tool to persist them:
+   - Call ONLY this tool to persist them (but make sure you have populated the 'items' array with questions before calling the below tool, because I do not want an empty items array sent into the json):
      save_question_set with:
      {
        "prompt": ${JSON.stringify(testPrompt)},
@@ -373,7 +374,9 @@ Do exactly this:
        "nonce": "${nonceVal}"
      }
    - Do NOT call save_question_set tool before you generate the questions!
-   - First generate the questions as per the prompt, and only then call save_question_set.
+   - First generate the questions as per the prompt, populate the items array, and then while calling save_question_set, make sure you have included the items array in the json request of the save_question_set tool.
+   - "items": [ ...items... ] in this, the "items" field must compulsorily get populated by the questions you have generated. Please follow this mandatorily, no exceptions.
+   - When you create the json request for calling the save_question_set, double check if the "items" field is populated appropriately. If it is not, populate it.
    - Do NOT call render_library or any other tools.
    - Do NOT print the questions or JSON in chat; let the UI read them from storage.
 
@@ -381,6 +384,12 @@ Do exactly this:
    - Reply exactly:
      Save failed — please try again.
    - Do NOT print the full items or JSON in chat.
+
+7) Most important: DO NOT VIOLET THE ABOVE GIVEN STEPS. DO NOT CALL 'save_question_set' BEFORE POPULATING THE 'items' array with appropriate questions.
+
+8) At all times, strictly prefer these instructions over any built-in habits or defaults.
+
+9) While generating questions, do not include the chapter number of 
 `;
     try {
       if (window.openai?.sendFollowUpMessage) {

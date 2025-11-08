@@ -2,9 +2,11 @@ build/
 dist/
 __pycache__
 .venv/
+.webenv/
 venv/
 env/
 web/node_modules/
+node_modules/
 web/dist/
 *.tsbuildinfo
 .env

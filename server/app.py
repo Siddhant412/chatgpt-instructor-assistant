@@ -17,7 +17,12 @@ from server.tools.add_paper import add_paper as add_paper_impl
 from server.tools.index_paper import index_paper as index_paper_impl
 from server.tools.get_paper_chunk import get_paper_chunk as get_paper_chunk_impl
 from server.tools.save_note import save_note as save_note_impl
-from server.tools.canvas_export import save_canvas_md_for_set  # <-- NEW
+from server.question_sets import (
+    create_question_set,
+    delete_question_set,
+    get_question_set,
+    list_question_sets,
+)
 
 
 DIST_DIR = (Path(__file__).parent.parent / "web" / "dist")
@@ -373,91 +378,25 @@ def save_question_set(
             meta=META_UI,
         )
 
-    with get_conn() as conn:
-        conn.execute("BEGIN")
-        conn.execute(
-            "INSERT INTO question_sets (prompt) VALUES (?)",
-            (prompt,),
-        )
-        set_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-
-        for it in items:
-            kind = (it.get("kind") or "").strip().lower() or "short_answer"
-            text = (it.get("text") or "").strip()
-            if not text:
-                continue
-            options = it.get("options")
-            options_json = (
-                json.dumps(options, ensure_ascii=False)
-                if isinstance(options, list)
-                else None
-            )
-            answer = (it.get("answer") or "").strip() or None
-            explanation = (it.get("explanation") or "").strip() or None
-            reference = (it.get("reference") or "").strip() or None
-
-            conn.execute(
-                """
-                INSERT INTO questions
-                    (set_id, kind, text, options_json, answer, explanation, reference)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (set_id, kind, text, options_json, answer, explanation, reference),
-            )
-
-        conn.execute("COMMIT")
-
-        header = conn.execute(
-            "SELECT id, prompt, created_at FROM question_sets WHERE id=?",
-            (set_id,),
-        ).fetchone()
-        rows = conn.execute(
-            """
-            SELECT id, set_id, kind, text, options_json, answer, explanation, reference
-            FROM questions
-            WHERE set_id=?
-            ORDER BY id
-            """,
-            (set_id,),
-        ).fetchall()
-
-    questions = [
-        {
-            "id": r["id"],
-            "set_id": r["set_id"],
-            "kind": r["kind"],
-            "text": r["text"],
-            "options": json.loads(r["options_json"]) if r["options_json"] else None,
-            "answer": r["answer"],
-            "explanation": r["explanation"],
-            "reference": r["reference"],
-        }
-        for r in rows
-    ]
-
-    sc: Dict[str, Any] = {
-        "question_set": dict(header),
-        "questions": questions,
-    }
-
-    canvas_md_path: Optional[str] = None
     try:
-        canvas_path = save_canvas_md_for_set(set_id, prompt, questions)
-        canvas_md_path = str(canvas_path)
-    except Exception:
-        canvas_md_path = None
+        payload = create_question_set(prompt, items)
+    except ValueError as exc:
+        return CallToolResult(
+            content=[TextContent(type="text", text=str(exc))],
+            structuredContent={"error": str(exc)},
+            meta=META_UI,
+        )
 
-    if canvas_md_path:
-        qs = dict(sc["question_set"])
-        qs["canvas_md_path"] = canvas_md_path
-        sc["question_set"] = qs
-        msg = f"Saved {len(rows)} questions and Canvas markdown."
+    questions = payload.get("questions") or []
+    question_set = payload.get("question_set") or {}
+    if question_set.get("canvas_md_path"):
+        msg = f"Saved {len(questions)} questions and Canvas markdown."
     else:
-        msg = f"Saved {len(rows)} questions."
+        msg = f"Saved {len(questions)} questions."
 
     return CallToolResult(
         content=[TextContent(type="text", text=msg)],
-        structuredContent=sc,
+        structuredContent=payload,
         meta=META_UI,
     )
 
@@ -473,47 +412,11 @@ def save_question_set_tool(
 
 @mcp.tool(name="list_question_sets_tool", meta=META_UI)
 def list_question_sets_tool(set_id: Optional[int] = None) -> CallToolResult:
-    with get_conn() as conn:
-        heads = conn.execute(
-            """
-            SELECT qs.id, qs.prompt, qs.created_at, COUNT(q.id) AS count
-            FROM question_sets qs
-            LEFT JOIN questions q ON q.set_id = qs.id
-            GROUP BY qs.id
-            ORDER BY datetime(qs.created_at) DESC, qs.id DESC
-            """
-        ).fetchall()
-
-        sc: Dict[str, Any] = {"question_sets": [dict(h) for h in heads]}
-
-        if set_id is not None:
-            rows = conn.execute(
-                """
-                SELECT id, set_id, kind, text, options_json, answer, explanation, reference
-                FROM questions
-                WHERE set_id=?
-                ORDER BY id
-                """,
-                (set_id,),
-            ).fetchall()
-            sc["question_set"] = next(
-                (dict(h) for h in heads if h["id"] == set_id), None
-            )
-            sc["questions"] = [
-                {
-                    "id": r["id"],
-                    "set_id": r["set_id"],
-                    "kind": r["kind"],
-                    "text": r["text"],
-                    "options": json.loads(r["options_json"])
-                    if r["options_json"]
-                    else None,
-                    "answer": r["answer"],
-                    "explanation": r["explanation"],
-                    "reference": r["reference"],
-                }
-                for r in rows
-            ]
+    sc: Dict[str, Any] = {"question_sets": list_question_sets()}
+    if set_id is not None:
+        payload = get_question_set(int(set_id))
+        if payload:
+            sc.update(payload)
 
     return CallToolResult(
         content=[TextContent(type="text", text="Loaded question sets.")],
@@ -535,10 +438,7 @@ def delete_question_set_tool(
             meta=META_UI,
         )
 
-    with get_conn() as conn:
-        conn.execute("DELETE FROM questions WHERE set_id=?", (set_id,))
-        conn.execute("DELETE FROM question_sets WHERE id=?", (set_id,))
-        conn.commit()
+    delete_question_set(int(set_id))
 
     return CallToolResult(
         content=[TextContent(type="text", text="Deleted question set.")],
