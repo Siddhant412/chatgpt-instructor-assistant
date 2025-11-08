@@ -256,9 +256,138 @@ textarea {
   margin-bottom: 10px;
 }
 
+.question-mode-toggle {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.question-mode-toggle button {
+  flex: 1;
+}
+
+.dual-pane,
+.upload-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.chat-pane,
+.markdown-panel,
+.upload-card {
+  border: 1px solid #e2e8f0;
+  border-radius: 18px;
+  padding: 20px;
+  background: #f8fafc;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.05);
+}
+
+.chat-placeholder {
+  margin-top: 16px;
+  border: 1px dashed #cbd5f5;
+  border-radius: 16px;
+  padding: 24px;
+  min-height: 320px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: white;
+}
+
+.chat-screen {
+  color: #94a3b8;
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.chat-footnote {
+  margin-top: 12px;
+  font-size: 0.9rem;
+}
+
+.upload-left {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.upload-card.manual-builder,
+.markdown-panel {
+  background: white;
+}
+
+.file-upload {
+  margin-top: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  border-radius: 999px;
+  border: 1px solid #cbd5f5;
+  padding: 10px 18px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.file-upload input {
+  display: none;
+}
+
+.file-pill {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: #e0e7ff;
+  color: #1e3a8a;
+  font-size: 0.9rem;
+}
+
+.set-list.compact li {
+  padding: 10px 12px;
+}
+
+.markdown-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.markdown-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.markdown-textarea {
+  margin-top: 12px;
+  min-height: 500px;
+  font-family: "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  background: #0f172a;
+  color: #f8fafc;
+  resize: vertical;
+}
+
+.manual-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 @media (max-width: 900px) {
   .note-layout,
   .question-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .dual-pane,
+  .upload-layout {
     grid-template-columns: 1fr;
   }
 
