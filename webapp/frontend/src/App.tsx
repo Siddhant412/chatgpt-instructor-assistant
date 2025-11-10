@@ -1,4 +1,4 @@
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   createNote,
   createQuestionSet,
@@ -15,6 +15,7 @@ import type { Note, Page, Paper, Question, QuestionSetMeta } from "./types";
 
 type QuestionForm = Question & { optionsDraft?: string };
 type QuestionMode = "generate" | "upload";
+type PaperMode = "library" | "ingest";
 
 const emptyNoteForm = (): { id?: number; title: string; body: string; paperId?: number | null } => ({
   title: "",
@@ -112,12 +113,35 @@ function Landing({ onNavigate }: { onNavigate: (page: Page) => void }) {
 
 function ResearchPapersPage({ onBack }: { onBack: () => void }) {
   const [papers, setPapers] = useState<Paper[]>([]);
+  const [localPapers, setLocalPapers] = useState<Paper[]>([]);
+  const [hiddenPaperIds, setHiddenPaperIds] = useState<Set<number>>(new Set());
+  const [selectedPaperId, setSelectedPaperId] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [paperMode, setPaperMode] = useState<PaperMode>("library");
+  const [pdfFullscreen, setPdfFullscreen] = useState(false);
+  const [downloadForm, setDownloadForm] = useState({ title: "", url: "", doi: "" });
+  const [downloadStatus, setDownloadStatus] = useState<string | null>(null);
 
   useEffect(() => {
     refresh();
   }, []);
+
+  const combinedPapers = useMemo(() => {
+    const all = [...localPapers, ...papers];
+    if (!hiddenPaperIds.size) {
+      return all;
+    }
+    return all.filter((paper) => !hiddenPaperIds.has(paper.id));
+  }, [localPapers, papers, hiddenPaperIds]);
+  const selectedPaper = combinedPapers.find((paper) => paper.id === selectedPaperId) ?? null;
+  const pdfSrc = selectedPaper?.pdf_path || selectedPaper?.source_url || null;
+
+  useEffect(() => {
+    if (!selectedPaperId && combinedPapers.length) {
+      setSelectedPaperId(combinedPapers[0].id);
+    }
+  }, [combinedPapers, selectedPaperId]);
 
   async function refresh() {
     setLoading(true);
@@ -125,6 +149,9 @@ function ResearchPapersPage({ onBack }: { onBack: () => void }) {
     try {
       const data = await listPapers();
       setPapers(data);
+      if (!selectedPaperId && data.length) {
+        setSelectedPaperId(data[0].id);
+      }
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -132,45 +159,204 @@ function ResearchPapersPage({ onBack }: { onBack: () => void }) {
     }
   }
 
+  function handleSelectPaper(paper: Paper) {
+    setSelectedPaperId(paper.id);
+    setPdfFullscreen(false);
+  }
+
+  function handleDownloadFieldChange(field: "title" | "url" | "doi", value: string) {
+    setDownloadForm((prev) => ({ ...prev, [field]: value }));
+  }
+
+  function handleDownloadPaperAction() {
+    if (!downloadForm.title && !downloadForm.url && !downloadForm.doi) {
+      setDownloadStatus("Provide a title, DOI, or URL to continue.");
+      return;
+    }
+    const fallbackTitle = downloadForm.title || downloadForm.url || downloadForm.doi || "Untitled paper";
+    const newPaper: Paper = {
+      id: Date.now(),
+      title: fallbackTitle,
+      source_url: downloadForm.url || undefined,
+      created_at: new Date().toISOString(),
+      note_count: 0
+    };
+    setLocalPapers((prev) => [newPaper, ...prev]);
+    setDownloadStatus("Paper added to your library. Full download + summary automation coming soon.");
+    setDownloadForm({ title: "", url: "", doi: "" });
+    setSelectedPaperId(newPaper.id);
+    setPaperMode("library");
+  }
+
+  function handleDeletePaper(paper: Paper) {
+    if (typeof window !== "undefined" && !window.confirm("Remove this paper from the list?")) {
+      return;
+    }
+    const remaining = combinedPapers.filter((p) => p.id !== paper.id);
+    if (selectedPaperId === paper.id) {
+      setSelectedPaperId(remaining.length ? remaining[0].id : null);
+    }
+    if (localPapers.some((p) => p.id === paper.id)) {
+      setLocalPapers((prev) => prev.filter((p) => p.id !== paper.id));
+    } else {
+      setHiddenPaperIds((prev) => {
+        const next = new Set(prev);
+        next.add(paper.id);
+        return next;
+      });
+    }
+  }
+
+  function openPaperSource() {
+    if (selectedPaper?.source_url && typeof window !== "undefined") {
+      window.open(selectedPaper.source_url, "_blank", "noopener,noreferrer");
+    }
+  }
+
   return (
-    <section className="page">
+    <section className="page research">
       <div className="page-head">
         <div>
           <h2>Research Papers</h2>
-          <p className="muted">Every paper listed here is already indexed inside the ChatGPT instructor assistant.</p>
+          <p className="muted">Browse existing PDFs or queue up new downloads to summarize with the instructor assistant.</p>
         </div>
         <div className="page-actions">
           <button onClick={onBack}>Back</button>
           <button onClick={refresh}>Refresh</button>
         </div>
       </div>
+      <div className="question-mode-toggle">
+        <button className={paperMode === "library" ? "primary" : ""} onClick={() => setPaperMode("library")}>
+          View Your Research Papers
+        </button>
+        <button className={paperMode === "ingest" ? "primary" : ""} onClick={() => setPaperMode("ingest")}>
+          Download and Summarize Papers
+        </button>
+      </div>
       {error && <p className="error">{error}</p>}
-      {loading ? <p>Loading papers…</p> : <PaperList papers={papers} />}
-    </section>
-  );
-}
-
-function PaperList({ papers }: { papers: Paper[] }) {
-  if (!papers.length) {
-    return <p>No papers found yet. Use the ChatGPT app to add one or run the ingestion scripts.</p>;
-  }
-  return (
-    <ul className="paper-list">
-      {papers.map((paper) => (
-        <li key={paper.id}>
-          <div className="paper-title">{paper.title || "Untitled paper"}</div>
-          <div className="paper-meta">
-            {paper.source_url && (
-              <a href={paper.source_url} target="_blank" rel="noreferrer">
-                Source
-              </a>
+      {paperMode === "library" ? (
+        <div className="research-view-layout">
+          <aside className="papers-sidebar">
+            <div className="notes-sidebar-head">
+              <div>
+                <p className="eyebrow-label">Library</p>
+                <h3>Papers ({combinedPapers.length})</h3>
+              </div>
+              <button onClick={refresh}>Sync</button>
+            </div>
+            {loading ? (
+              <p>Loading papers…</p>
+            ) : combinedPapers.length ? (
+              <ul className="paper-list modern">
+                {combinedPapers.map((paper) => (
+                  <li key={paper.id}>
+                    <div className={`paper-card ${paper.id === selectedPaperId ? "active" : ""}`} onClick={() => handleSelectPaper(paper)}>
+                      <div className="paper-card-info">
+                        <strong>{paper.title || "Untitled paper"}</strong>
+                        <span>{paperDomain(paper.source_url) || "Local file"}</span>
+                      </div>
+                      <div className="paper-card-meta">
+                        <span className="paper-date">{friendlyDate(paper.created_at)}</span>
+                        <button
+                          className="ghost paper-delete"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeletePaper(paper);
+                          }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p>No papers yet. Switch to download mode to add one.</p>
             )}
-            <span>Notes: {paper.note_count ?? 0}</span>
-            {paper.created_at && <span>{new Date(paper.created_at).toLocaleString()}</span>}
+          </aside>
+          <div className="paper-viewer-column">
+            {pdfFullscreen && <div className="pdf-backdrop" onClick={() => setPdfFullscreen(false)} />}
+            <div className={`paper-viewer-shell ${pdfFullscreen ? "fullscreen" : ""}`}>
+              <div className="paper-viewer-head">
+                <div>
+                  <h3>{selectedPaper?.title || "Select a paper"}</h3>
+                  <p className="muted">
+                    {selectedPaper
+                      ? selectedPaper.source_url
+                        ? paperDomain(selectedPaper.source_url)
+                        : "No external link provided."
+                      : "Choose a paper on the left to preview the PDF."}
+                  </p>
+                </div>
+                <div className="paper-viewer-actions">
+                  <button onClick={openPaperSource} disabled={!selectedPaper?.source_url}>
+                    Open Source
+                  </button>
+                  <button onClick={() => setPdfFullscreen((prev) => !prev)} disabled={!pdfSrc}>
+                    {pdfFullscreen ? "Exit Fullscreen" : "Fullscreen"}
+                  </button>
+                </div>
+              </div>
+              <div className="paper-viewer-body">
+                {selectedPaper ? (
+                  pdfSrc ? (
+                    <iframe src={pdfSrc} title={selectedPaper.title || "Research PDF"} />
+                  ) : (
+                    <div className="pdf-placeholder">
+                      <p>No PDF available for this entry yet.</p>
+                      <p className="muted">Use Download & Summarize to fetch the file automatically.</p>
+                    </div>
+                  )
+                ) : (
+                  <div className="pdf-placeholder">
+                    <p>Select a paper from the list to begin.</p>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
-        </li>
-      ))}
-    </ul>
+        </div>
+      ) : (
+        <div className="papers-download-layout">
+          <div className="download-card">
+            <h3>Download a Paper</h3>
+            <p className="muted">Provide whatever you have—DOI, title, or URL—and we&apos;ll queue the PDF.</p>
+            <label>
+              Paper Title
+              <input value={downloadForm.title} onChange={(e) => handleDownloadFieldChange("title", e.target.value)} placeholder="e.g., Attention Is All You Need" />
+            </label>
+            <label>
+              DOI
+              <input value={downloadForm.doi} onChange={(e) => handleDownloadFieldChange("doi", e.target.value)} placeholder="10.5555/3295222.3295349" />
+            </label>
+            <label>
+              URL
+              <input value={downloadForm.url} onChange={(e) => handleDownloadFieldChange("url", e.target.value)} placeholder="https://arxiv.org/abs/1706.03762" />
+            </label>
+            <div className="form-actions">
+              <button className="primary" onClick={handleDownloadPaperAction}>
+                Download Paper
+              </button>
+              <button onClick={() => setDownloadForm({ title: "", url: "", doi: "" })}>Clear</button>
+            </div>
+            {downloadStatus && <p className="status">{downloadStatus}</p>}
+          </div>
+          <div className="papers-chat-card">
+            <h3>Summarize with the Assistant</h3>
+            <p className="muted">Chatbot hooks coming soon. You&apos;ll be able to drop PDFs, ask for abstracts, and push highlights to Notes.</p>
+            <div className="chat-placeholder tall">
+              <div className="chat-screen">Chatbot workspace placeholder</div>
+            </div>
+            <ul className="coming-soon-list">
+              <li>Ask for executive summaries or quizzes.</li>
+              <li>Auto-create notes directly in the editor.</li>
+              <li>Track download status + ingestion logs.</li>
+            </ul>
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -182,10 +368,63 @@ function NotesPage({ onBack }: { onBack: () => void }) {
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
+  const [searchQuery, setSearchQuery] = useState("");
+  const [matchPreview, setMatchPreview] = useState<{ id: number; snippet: string }[]>([]);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const highlightRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     refreshAll();
   }, []);
+
+  const filteredNotes = useMemo(() => {
+    if (!searchQuery.trim()) {
+      setMatchPreview([]);
+      return notes;
+    }
+    const q = searchQuery.toLowerCase();
+    const matches: { id: number; snippet: string }[] = [];
+    const filtered = notes.filter((note) => {
+      const title = note.title?.toLowerCase() ?? "";
+      const body = note.body?.toLowerCase() ?? "";
+      const found = title.includes(q) || body.includes(q);
+      if (found) {
+        const snippet = buildSnippet(note.body || "", q);
+        matches.push({ id: note.id, snippet });
+      }
+      return found;
+    });
+    setMatchPreview(matches);
+    return filtered;
+  }, [notes, searchQuery]);
+
+  const wordCount = useMemo(() => {
+    const text = (form.body || "").trim();
+    if (!text) {
+      return 0;
+    }
+    return text.split(/\s+/).length;
+  }, [form.body]);
+
+  const highlightedBody = useMemo(() => {
+    return renderHighlightedBody(form.body || "", searchQuery);
+  }, [form.body, searchQuery]);
+
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    const highlightLayer = highlightRef.current;
+    if (!textarea || !highlightLayer) {
+      return;
+    }
+    const layer = highlightLayer;
+    const area = textarea;
+    const syncScroll = () => {
+      layer.scrollTop = area.scrollTop;
+    };
+    area.addEventListener("scroll", syncScroll);
+    return () => {
+      area.removeEventListener("scroll", syncScroll);
+    };
+  }, [form.body, searchQuery]);
 
   async function refreshAll() {
     setLoading(true);
@@ -207,7 +446,7 @@ function NotesPage({ onBack }: { onBack: () => void }) {
       id: note.id,
       title: note.title || "",
       body: note.body,
-      paperId: note.paper_id ?? undefined
+      paperId: undefined
     });
     setStatus(null);
   }
@@ -221,7 +460,7 @@ function NotesPage({ onBack }: { onBack: () => void }) {
   function handleFieldChange(field: "title" | "body" | "paperId", value: string) {
     setForm((prev) => ({
       ...prev,
-      [field]: field === "paperId" ? (value ? Number(value) : undefined) : value
+      [field]: field === "paperId" ? undefined : value
     }));
   }
 
@@ -238,13 +477,13 @@ function NotesPage({ onBack }: { onBack: () => void }) {
         saved = await updateNote(selectedNoteId, {
           title: form.title,
           body: form.body,
-          paper_id: form.paperId ?? null
+          paper_id: null
         });
       } else {
         saved = await createNote({
           title: form.title,
           body: form.body,
-          paper_id: form.paperId ?? null
+          paper_id: null
         });
         setSelectedNoteId(saved.id);
       }
@@ -287,60 +526,175 @@ function NotesPage({ onBack }: { onBack: () => void }) {
       </div>
       {loading && <p>Loading notes…</p>}
       {error && <p className="error">{error}</p>}
-      <div className="note-layout">
-        <aside>
-          <div className="list-head">
-            <h3>Notes</h3>
+      <div className="note-layout modern-notes">
+        <aside className="notes-sidebar">
+          <div className="notes-sidebar-head">
+            <div>
+              <p className="eyebrow-label">Notebook</p>
+              <h3>All Notes</h3>
+            </div>
             <button onClick={startNewNote}>New</button>
           </div>
-          <ul className="note-list">
-            {notes.map((note) => (
-              <li
-                key={note.id}
-                className={note.id === selectedNoteId ? "active" : ""}
-                onClick={() => handleSelect(note)}
-              >
-                <strong>{note.title || "Untitled note"}</strong>
-                <span className="muted">{note.paper_title || "Unassigned"}</span>
-              </li>
-            ))}
-          </ul>
-        </aside>
-        <div className="note-editor">
-          <label>
-            Title
-            <input value={form.title} onChange={(e) => handleFieldChange("title", e.target.value)} placeholder="Note title" />
-          </label>
-          <label>
-            Paper
-            <select value={form.paperId ?? ""} onChange={(e) => handleFieldChange("paperId", e.target.value)}>
-              <option value="">Unassigned</option>
-              {papers.map((paper) => (
-                <option key={paper.id} value={paper.id}>
-                  {paper.title}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Body
-            <textarea value={form.body} onChange={(e) => handleFieldChange("body", e.target.value)} rows={12} placeholder="Write or paste a summary…" />
-          </label>
-          <div className="form-actions">
-            <button className="primary" onClick={handleSave}>
-              {selectedNoteId ? "Update Note" : "Create Note"}
-            </button>
-            {selectedNoteId && (
-              <button className="danger" onClick={handleDelete}>
-                Delete
+          <div className="notes-sidebar-hero">
+            <div>
+              <span className="hero-label">Notes Saved</span>
+              <strong>{notes.length}</strong>
+            </div>
+            <div>
+              <span className="hero-label">Last Refresh</span>
+              <strong>{new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</strong>
+            </div>
+          </div>
+          <div className="note-search">
+            <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder="Search in notes…" />
+            {searchQuery && (
+              <button onClick={() => setSearchQuery("")} aria-label="Clear search">
+                ×
               </button>
             )}
           </div>
-          {status && <p className="status">{status}</p>}
+          <ul className="note-list modern">
+            {filteredNotes.map((note) => (
+              <li
+                key={note.id}
+                className={`note-card ${note.id === selectedNoteId ? "active" : ""}`}
+                onClick={() => handleSelect(note)}
+              >
+                <div>
+                  <span className="note-title">{truncateNoteTitle(note.title)}</span>
+                  {searchQuery && (
+                    <p className="note-snippet">
+                      {matchPreview.find((match) => match.id === note.id)?.snippet || "Contains match"}
+                    </p>
+                  )}
+                </div>
+                <span className="note-date">{friendlyDate(note.created_at)}</span>
+              </li>
+            ))}
+            {!filteredNotes.length && (
+              <li className="empty-state">{searchQuery ? "No notes match that search." : "No notes yet. Tap New to capture your first one."}</li>
+            )}
+          </ul>
+        </aside>
+        <div className="notes-editor-shell">
+          <div className="notes-editor-head">
+            <div>
+              <p className="eyebrow-label">{selectedNoteId ? "Editing note" : "New note"}</p>
+              <span className="word-count">{wordCount} words</span>
+            </div>
+            <span className="note-tag pill">{selectedNoteId ? `#${selectedNoteId}` : "Draft"}</span>
+          </div>
+          <div className="note-editor modern">
+            <div className="note-canvas">
+              <input
+                className="note-canvas-title"
+                value={form.title}
+                onChange={(e) => handleFieldChange("title", e.target.value)}
+                placeholder="Untitled note"
+              />
+              <div className="note-body-wrapper">
+                <div className="note-highlight-layer" aria-hidden="true" ref={highlightRef} dangerouslySetInnerHTML={{ __html: highlightedBody }} />
+                <textarea
+                  className="note-canvas-body overlay"
+                  ref={textareaRef}
+                  value={form.body}
+                  onChange={(e) => handleFieldChange("body", e.target.value)}
+                  placeholder="Write or paste a summary…"
+                />
+              </div>
+            </div>
+            <div className="form-actions floating">
+              <button className="primary" onClick={handleSave}>
+                {selectedNoteId ? "Update Note" : "Create Note"}
+              </button>
+              {selectedNoteId && (
+                <button className="danger" onClick={handleDelete}>
+                  Delete
+                </button>
+              )}
+            </div>
+            {status && <p className="status">{status}</p>}
+          </div>
         </div>
       </div>
     </section>
   );
+}
+
+function friendlyDate(value?: string | null): string {
+  if (!value) {
+    return "Draft";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "Draft";
+  }
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function truncateNoteTitle(value?: string | null, maxWords = 6): string {
+  const title = (value || "").trim();
+  if (!title) {
+    return "Untitled note";
+  }
+  const words = title.split(/\s+/);
+  if (words.length <= maxWords) {
+    return title;
+  }
+  return `${words.slice(0, maxWords).join(" ")}…`;
+}
+
+function paperDomain(url?: string | null): string {
+  if (!url) {
+    return "";
+  }
+  try {
+    const hostname = new URL(url).hostname;
+    return hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
+function buildSnippet(body: string, query: string, radius = 60): string {
+  const normalized = body || "";
+  const lower = normalized.toLowerCase();
+  const idx = lower.indexOf(query);
+  if (idx === -1) {
+    return normalized.slice(0, radius).trim();
+  }
+  const start = Math.max(0, idx - radius / 2);
+  const end = Math.min(normalized.length, idx + query.length + radius / 2);
+  let snippet = normalized.slice(start, end).trim();
+  if (start > 0) {
+    snippet = `…${snippet}`;
+  }
+  if (end < normalized.length) {
+    snippet = `${snippet}…`;
+  }
+  return snippet;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function renderHighlightedBody(body: string, query: string): string {
+  const safe = escapeHtml(body).replace(/\n/g, "<br />");
+  if (!query.trim()) {
+    return safe || '<span class="placeholder-text">Write or paste a summary…</span>';
+  }
+  const regex = new RegExp(`(${escapeRegExp(query)})`, "gi");
+  return safe.replace(regex, "<mark>$1</mark>") || '<span class="placeholder-text">Write or paste a summary…</span>';
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function QuestionSetsPage({ onBack }: { onBack: () => void }) {
