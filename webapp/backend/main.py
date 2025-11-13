@@ -1,8 +1,13 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Response
+from dotenv import load_dotenv
+from fastapi import FastAPI, File, HTTPException, Response, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from server.db import get_conn
@@ -14,13 +19,44 @@ from server.question_sets import (
     update_question_set,
 )
 from server.tools.render_library import render_library_structured
+from server.tools.add_paper import add_paper
+from server.tools.delete_paper import delete_paper as delete_paper_record
 
 from .schemas import (
     NoteCreate,
     NoteUpdate,
+    PaperChatRequest,
+    PaperDownloadRequest,
+    PaperRecord,
+    QuestionContextUploadResponse,
+    QuestionGenerationRequest,
+    QuestionGenerationResponse,
     QuestionSetCreate,
     QuestionSetUpdate,
 )
+from .services import (
+    QuestionGenerationError,
+    extract_context_from_upload,
+    generate_questions,
+    summarize_paper_chat,
+    stream_generate_questions,
+)
+
+load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
+
+
+def _get_paper(paper_id: int) -> Optional[Dict[str, Any]]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, title, source_url, pdf_path, created_at FROM papers WHERE id=?",
+            (paper_id,)
+        ).fetchone()
+    if not row:
+        return None
+    data = dict(row)
+    pdf_path = data.get("pdf_path")
+    data["pdf_url"] = f"/api/papers/{data['id']}/file" if pdf_path else None
+    return data
 
 app = FastAPI(title="Instructor Assistant Web API")
 
@@ -47,6 +83,19 @@ def health() -> Dict[str, str]:
 def list_papers() -> Dict[str, List[Dict]]:
     data = render_library_structured()
     return {"papers": data.get("papers", [])}
+
+
+@app.get("/api/papers/{paper_id}/file")
+def download_paper_file(paper_id: int):
+    with get_conn() as conn:
+        row = conn.execute("SELECT title, pdf_path FROM papers WHERE id=?", (paper_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Paper not found.")
+    pdf_path = Path(row["pdf_path"])
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail="PDF not available on server.")
+    headers = {"Content-Disposition": f"inline; filename=\"{pdf_path.name}\""}
+    return FileResponse(pdf_path, media_type="application/pdf", headers=headers)
 
 
 @app.get("/api/notes")
@@ -166,6 +215,81 @@ def delete_question_set_handler(set_id: int) -> Response:
         raise HTTPException(status_code=404, detail="Question set not found.")
     delete_question_set(set_id)
     return Response(status_code=204)
+
+
+@app.post("/api/question-sets/generate", response_model=QuestionGenerationResponse)
+async def generate_question_set_ai(payload: QuestionGenerationRequest) -> QuestionGenerationResponse:
+    try:
+        return await run_in_threadpool(generate_questions, payload)
+    except QuestionGenerationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/question-sets/generate/stream")
+async def generate_question_set_stream(payload: QuestionGenerationRequest):
+    async def event_stream():
+        try:
+            async for event in stream_generate_questions(payload):
+                yield f"data: {json.dumps(event)}\n\n"
+        except QuestionGenerationError as exc:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/api/question-sets/context", response_model=QuestionContextUploadResponse)
+async def upload_question_context(file: UploadFile = File(...)) -> QuestionContextUploadResponse:
+    contents = await file.read()
+    if not contents:
+        raise HTTPException(status_code=400, detail="Uploaded file was empty.")
+    try:
+        return await extract_context_from_upload(file.filename or "upload", contents)
+    except QuestionGenerationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/papers/download", status_code=201)
+async def download_paper(payload: PaperDownloadRequest) -> Dict[str, PaperRecord]:
+    source = payload.source.strip()
+    if not source:
+        raise HTTPException(status_code=400, detail="Enter a DOI, URL, or PDF source.")
+    try:
+        result = await add_paper(source, payload.source_url or source)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    paper = _get_paper(result["paper_id"])
+    if not paper:
+        raise HTTPException(status_code=500, detail="Downloaded paper could not be loaded.")
+    return {"paper": PaperRecord.model_validate(paper)}
+
+
+@app.delete("/api/papers/{paper_id}", status_code=204, response_class=Response)
+def delete_paper_handler(paper_id: int) -> Response:
+    paper = _get_paper(paper_id)
+    if not paper:
+        raise HTTPException(status_code=404, detail="Paper not found.")
+    try:
+        delete_paper_record(paper_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    path = paper.get("pdf_path")
+    if path:
+        pdf_path = Path(path)
+        pdf_path.unlink(missing_ok=True)
+    return Response(status_code=204)
+
+
+@app.post("/api/papers/{paper_id}/chat")
+async def paper_summary_chat(paper_id: int, payload: PaperChatRequest) -> Dict[str, Any]:
+    if not payload.messages:
+        raise HTTPException(status_code=400, detail="Provide at least one message.")
+    try:
+        data = await run_in_threadpool(summarize_paper_chat, paper_id, [m for m in payload.messages])
+    except QuestionGenerationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return data
 
 
 if __name__ == "__main__":

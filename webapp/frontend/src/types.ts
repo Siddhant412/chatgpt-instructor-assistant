@@ -7,6 +7,7 @@ export interface Paper {
   created_at?: string | null;
   note_count?: number;
   pdf_path?: string;
+  pdf_url?: string | null;
 }
 
 export interface Note {
@@ -40,4 +41,42 @@ export interface QuestionSetMeta {
 export interface QuestionSetPayload {
   question_set: QuestionSetMeta;
   questions: Question[];
+}
+
+export interface QuestionGenerationPayload {
+  instructions: string;
+  context?: string;
+  question_count?: number;
+  question_types?: string[];
+}
+
+export interface QuestionGenerationResult {
+  questions: Question[];
+  markdown: string;
+  raw_response?: string;
+}
+
+export interface QuestionContext {
+  context_id: string;
+  filename: string;
+  characters: number;
+  preview: string;
+  text: string;
+}
+
+export type QuestionStreamEvent =
+  | { type: "chunk"; content: string }
+  | { type: "complete"; questions: Question[]; markdown: string; raw_response?: string }
+  | { type: "error"; message: string };
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface PaperChatResponse {
+  message: string;
+  paper_id: number;
+  paper_title?: string | null;
+  suggested_title?: string | null;
 }

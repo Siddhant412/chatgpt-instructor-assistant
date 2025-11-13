@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import List, Optional
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -34,3 +35,60 @@ class QuestionSetCreate(BaseModel):
 class QuestionSetUpdate(BaseModel):
     prompt: Optional[str] = Field(default=None, min_length=3)
     questions: List[Question] = Field(..., min_length=1)
+
+
+class QuestionGenerationRequest(BaseModel):
+    instructions: str = Field(..., min_length=5)
+    context: Optional[str] = None
+    question_count: Optional[int] = Field(default=None, ge=1, le=100)
+    question_types: Optional[List[str]] = None
+    format: Optional[str] = Field(
+        default="json",
+        description="Desired response format; currently only 'json' is supported."
+    )
+
+
+class QuestionGenerationResponse(BaseModel):
+    questions: List[Question]
+    markdown: str
+    raw_response: Optional[str] = None
+
+
+class QuestionContextUploadResponse(BaseModel):
+    context_id: str
+    filename: str
+    characters: int
+    preview: str
+    text: str
+
+
+class PaperRecord(BaseModel):
+    id: int
+    title: Optional[str] = None
+    source_url: Optional[str] = None
+    pdf_path: Optional[str] = None
+    pdf_url: Optional[str] = None
+    created_at: Optional[str] = None
+    note_count: Optional[int] = None
+
+
+class NoteRecord(BaseModel):
+    id: int
+    paper_id: Optional[int] = None
+    title: Optional[str] = None
+    body: str
+    created_at: Optional[str] = None
+
+
+class PaperDownloadRequest(BaseModel):
+    source: str = Field(..., min_length=3)
+    source_url: Optional[str] = None
+
+
+class PaperChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1)
+
+
+class PaperChatRequest(BaseModel):
+    messages: List[PaperChatMessage] = Field(..., min_length=1)

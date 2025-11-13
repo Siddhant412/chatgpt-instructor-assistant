@@ -1,7 +1,19 @@
-import { Note, Paper, Question, QuestionSetMeta, QuestionSetPayload } from "./types";
+import {
+  ChatMessage,
+  Note,
+  Paper,
+  PaperChatResponse,
+  Question,
+  QuestionContext,
+  QuestionGenerationPayload,
+  QuestionGenerationResult,
+  QuestionSetMeta,
+  QuestionSetPayload,
+  QuestionStreamEvent
+} from "./types";
 
 const DEFAULT_BASE = (import.meta.env.VITE_API_BASE as string | undefined) || "http://localhost:8010/api";
-const API_BASE = DEFAULT_BASE.replace(/\/$/, "");
+export const API_BASE = DEFAULT_BASE.replace(/\/$/, "");
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers: HeadersInit = {
@@ -80,4 +92,95 @@ export async function updateQuestionSet(setId: number, input: { prompt?: string;
 
 export async function deleteQuestionSet(setId: number): Promise<void> {
   await request<void>(`/question-sets/${setId}`, { method: "DELETE" });
+}
+
+export async function generateQuestionSetWithLLM(input: QuestionGenerationPayload): Promise<QuestionGenerationResult> {
+  return request<QuestionGenerationResult>("/question-sets/generate", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function uploadQuestionContext(file: File): Promise<QuestionContext> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await fetch(`${API_BASE}/question-sets/context`, {
+    method: "POST",
+    body: formData
+  });
+  if (!res.ok) {
+    const message = await res.text();
+    throw new Error(message || "Failed to upload context");
+  }
+  return (await res.json()) as QuestionContext;
+}
+
+export async function streamQuestionGeneration(
+  input: QuestionGenerationPayload,
+  onEvent: (event: QuestionStreamEvent) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/question-sets/generate/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(input),
+    signal
+  });
+  if (!res.ok || !res.body) {
+    const text = await res.text();
+    throw new Error(text || "Failed to start generation stream");
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    buffer += decoder.decode(value, { stream: true });
+    let boundary;
+    while ((boundary = buffer.indexOf("\n\n")) !== -1) {
+      const chunk = buffer.slice(0, boundary).trim();
+      buffer = buffer.slice(boundary + 2);
+      chunk
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .forEach((line) => {
+          if (line.startsWith("data:")) {
+            const payload = line.slice(5).trim();
+            if (!payload) {
+              return;
+            }
+            try {
+              onEvent(JSON.parse(payload));
+            } catch {
+              // ignore malformed chunk
+            }
+          }
+        });
+    }
+  }
+}
+
+export async function downloadPaper(input: { source: string; source_url?: string }): Promise<Paper> {
+  const data = await request<{ paper: Paper }>("/papers/download", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+  return data.paper;
+}
+
+export async function deletePaper(paperId: number): Promise<void> {
+  await request<void>(`/papers/${paperId}`, { method: "DELETE" });
+}
+
+export async function chatPaper(paperId: number, messages: ChatMessage[]): Promise<PaperChatResponse> {
+  return request<PaperChatResponse>(`/papers/${paperId}/chat`, {
+    method: "POST",
+    body: JSON.stringify({ messages })
+  });
 }

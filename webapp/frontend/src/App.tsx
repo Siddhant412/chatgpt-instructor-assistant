@@ -1,17 +1,23 @@
-import { ChangeEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
+  API_BASE,
   createNote,
   createQuestionSet,
   deleteNote,
   deleteQuestionSet,
+  deletePaper as deletePaperApi,
   getQuestionSet,
   listNotes,
   listPapers,
   listQuestionSets,
   updateNote,
-  updateQuestionSet
+  updateQuestionSet,
+  uploadQuestionContext,
+  streamQuestionGeneration,
+  downloadPaper,
+  chatPaper
 } from "./api";
-import type { Note, Page, Paper, Question, QuestionSetMeta } from "./types";
+import type { ChatMessage, Note, Page, Paper, Question, QuestionContext, QuestionSetMeta } from "./types";
 
 type QuestionForm = Question & { optionsDraft?: string };
 type QuestionMode = "generate" | "upload";
@@ -42,6 +48,12 @@ _The generated markdown will appear here once the LLM workspace is connected._
 
 function App() {
   const [page, setPage] = useState<Page>("landing");
+  const [focusNoteId, setFocusNoteId] = useState<number | null>(null);
+
+  function handleOpenNote(noteId: number) {
+    setFocusNoteId(noteId);
+    setPage("notes");
+  }
 
   return (
     <div className="app-shell">
@@ -67,8 +79,8 @@ function App() {
       </header>
       <main>
         {page === "landing" && <Landing onNavigate={setPage} />}
-        {page === "papers" && <ResearchPapersPage onBack={() => setPage("landing")} />}
-        {page === "notes" && <NotesPage onBack={() => setPage("landing")} />}
+        {page === "papers" && <ResearchPapersPage onBack={() => setPage("landing")} onOpenNote={handleOpenNote} />}
+        {page === "notes" && <NotesPage onBack={() => setPage("landing")} focusNoteId={focusNoteId} onFocusConsumed={() => setFocusNoteId(null)} />}
         {page === "questions" && <QuestionSetsPage onBack={() => setPage("landing")} />}
       </main>
     </div>
@@ -111,7 +123,16 @@ function Landing({ onNavigate }: { onNavigate: (page: Page) => void }) {
   );
 }
 
-function ResearchPapersPage({ onBack }: { onBack: () => void }) {
+type PaperChatEntry = ChatMessage & {
+  id: string;
+  paperId?: number | null;
+  suggestedTitle?: string | null;
+  savedNote?: Note;
+  saving?: boolean;
+  error?: string | null;
+};
+
+function ResearchPapersPage({ onBack, onOpenNote }: { onBack: () => void; onOpenNote?: (noteId: number) => void }) {
   const [papers, setPapers] = useState<Paper[]>([]);
   const [localPapers, setLocalPapers] = useState<Paper[]>([]);
   const [hiddenPaperIds, setHiddenPaperIds] = useState<Set<number>>(new Set());
@@ -122,6 +143,12 @@ function ResearchPapersPage({ onBack }: { onBack: () => void }) {
   const [pdfFullscreen, setPdfFullscreen] = useState(false);
   const [downloadForm, setDownloadForm] = useState({ title: "", url: "", doi: "" });
   const [downloadStatus, setDownloadStatus] = useState<string | null>(null);
+  const [summaryPaperId, setSummaryPaperId] = useState<number | null>(null);
+  const [summaryChatHistory, setSummaryChatHistory] = useState<PaperChatEntry[]>([]);
+  const [summaryChatInput, setSummaryChatInput] = useState("");
+  const [summaryChatLoading, setSummaryChatLoading] = useState(false);
+  const [summaryChatStatus, setSummaryChatStatus] = useState<string | null>(null);
+  const summaryChatIdRef = useRef(0);
 
   useEffect(() => {
     refresh();
@@ -135,13 +162,30 @@ function ResearchPapersPage({ onBack }: { onBack: () => void }) {
     return all.filter((paper) => !hiddenPaperIds.has(paper.id));
   }, [localPapers, papers, hiddenPaperIds]);
   const selectedPaper = combinedPapers.find((paper) => paper.id === selectedPaperId) ?? null;
-  const pdfSrc = selectedPaper?.pdf_path || selectedPaper?.source_url || null;
+  const apiHost = useMemo(() => API_BASE.replace(/\/api$/, ""), []);
+  const resolvedPdfUrl = useMemo(() => {
+    if (!selectedPaper?.pdf_url) {
+      return null;
+    }
+    return selectedPaper.pdf_url.startsWith("http") ? selectedPaper.pdf_url : `${apiHost}${selectedPaper.pdf_url}`;
+  }, [selectedPaper?.pdf_url, apiHost]);
+  const pdfSrc = resolvedPdfUrl || selectedPaper?.pdf_path || selectedPaper?.source_url || null;
 
   useEffect(() => {
     if (!selectedPaperId && combinedPapers.length) {
       setSelectedPaperId(combinedPapers[0].id);
     }
   }, [combinedPapers, selectedPaperId]);
+
+  useEffect(() => {
+    if (!summaryPaperId && combinedPapers.length) {
+      setSummaryPaperId(combinedPapers[0].id);
+    }
+    if (!combinedPapers.length) {
+      setSummaryPaperId(null);
+      setSummaryChatHistory([]);
+    }
+  }, [combinedPapers, summaryPaperId]);
 
   async function refresh() {
     setLoading(true);
@@ -168,48 +212,132 @@ function ResearchPapersPage({ onBack }: { onBack: () => void }) {
     setDownloadForm((prev) => ({ ...prev, [field]: value }));
   }
 
-  function handleDownloadPaperAction() {
-    if (!downloadForm.title && !downloadForm.url && !downloadForm.doi) {
+  async function handleDownloadPaperAction() {
+    const source = downloadForm.url.trim() || downloadForm.doi.trim() || downloadForm.title.trim();
+    if (!source) {
       setDownloadStatus("Provide a title, DOI, or URL to continue.");
       return;
     }
-    const fallbackTitle = downloadForm.title || downloadForm.url || downloadForm.doi || "Untitled paper";
-    const newPaper: Paper = {
-      id: Date.now(),
-      title: fallbackTitle,
-      source_url: downloadForm.url || undefined,
-      created_at: new Date().toISOString(),
-      note_count: 0
-    };
-    setLocalPapers((prev) => [newPaper, ...prev]);
-    setDownloadStatus("Paper added to your library. Full download + summary automation coming soon.");
-    setDownloadForm({ title: "", url: "", doi: "" });
-    setSelectedPaperId(newPaper.id);
-    setPaperMode("library");
+    setDownloadStatus("Downloading paper…");
+    try {
+      const paper = await downloadPaper({ source, source_url: downloadForm.url.trim() || undefined });
+      setDownloadStatus(`Added “${paper.title || "New paper"}” to your library.`);
+      setDownloadForm({ title: "", url: "", doi: "" });
+      await refresh();
+      setSelectedPaperId(paper.id);
+      setPaperMode("library");
+    } catch (err) {
+      setDownloadStatus((err as Error).message);
+    }
   }
 
-  function handleDeletePaper(paper: Paper) {
+  async function handleDeletePaper(paper: Paper) {
     if (typeof window !== "undefined" && !window.confirm("Remove this paper from the list?")) {
       return;
     }
-    const remaining = combinedPapers.filter((p) => p.id !== paper.id);
-    if (selectedPaperId === paper.id) {
+    try {
+      await deletePaperApi(paper.id);
+      await refresh();
+      const remaining = combinedPapers.filter((p) => p.id !== paper.id);
       setSelectedPaperId(remaining.length ? remaining[0].id : null);
-    }
-    if (localPapers.some((p) => p.id === paper.id)) {
-      setLocalPapers((prev) => prev.filter((p) => p.id !== paper.id));
-    } else {
       setHiddenPaperIds((prev) => {
         const next = new Set(prev);
-        next.add(paper.id);
+        next.delete(paper.id);
         return next;
       });
+      setDownloadStatus("Paper removed from library.");
+    } catch (err) {
+      setError((err as Error).message);
     }
   }
 
+  function handleSummaryPaperChange(id: number) {
+    setSummaryPaperId(id);
+    setSummaryChatHistory([]);
+    setSummaryChatStatus(null);
+  }
+
+  function handleSummaryChatKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      if (!summaryChatLoading) {
+        handleSummaryChatSend();
+      }
+    }
+  }
+
+  async function handleSummaryChatSend() {
+    if (!summaryPaperId) {
+      setSummaryChatStatus("Select a paper to summarize.");
+      return;
+    }
+    if (!summaryChatInput.trim()) {
+      return;
+    }
+    const userMessage: PaperChatEntry = {
+      role: "user",
+      content: summaryChatInput.trim(),
+      id: `summary-${summaryChatIdRef.current++}`
+    };
+    const nextHistory = [...summaryChatHistory, userMessage];
+    setSummaryChatHistory(nextHistory);
+    setSummaryChatInput("");
+    setSummaryChatLoading(true);
+    setSummaryChatStatus("Generating summary…");
+    try {
+      const payloadHistory = nextHistory.map(({ role, content }) => ({ role, content }));
+      const result = await chatPaper(summaryPaperId, payloadHistory);
+      const assistantEntry: PaperChatEntry = {
+        role: "assistant",
+        content: result.message,
+        id: `summary-${summaryChatIdRef.current++}`,
+        paperId: result.paper_id,
+        suggestedTitle: result.suggested_title || result.paper_title || "Paper Summary",
+      };
+      setSummaryChatHistory((prev) => [...prev, assistantEntry]);
+      setSummaryChatStatus("Assistant replied. Save the responses you want to keep.");
+    } catch (err) {
+      setSummaryChatStatus((err as Error).message);
+    } finally {
+      setSummaryChatLoading(false);
+    }
+  }
+
+  async function handleSaveAssistantMessage(entryId: string) {
+    const target = summaryChatHistory.find((msg) => msg.id === entryId);
+    if (!target || target.role !== "assistant" || target.savedNote || target.saving) {
+      return;
+    }
+    const paperId = target.paperId || summaryPaperId;
+    if (!paperId) {
+      setSummaryChatStatus("Select a paper before saving notes.");
+      return;
+    }
+    setSummaryChatHistory((prev) =>
+      prev.map((msg) => (msg.id === entryId ? { ...msg, saving: true, error: null } : msg))
+    );
+    try {
+      const note = await createNote({
+        title: target.suggestedTitle || selectedPaper?.title || "Paper Summary",
+        body: target.content,
+        paper_id: paperId
+      });
+      setSummaryChatHistory((prev) =>
+        prev.map((msg) => (msg.id === entryId ? { ...msg, saving: false, savedNote: note } : msg))
+      );
+      setSummaryChatStatus(`Saved to notes as "${note.title || "Paper Summary"}".`);
+    } catch (err) {
+      setSummaryChatHistory((prev) =>
+        prev.map((msg) => (msg.id === entryId ? { ...msg, saving: false, error: (err as Error).message } : msg))
+      );
+    }
+  }
+
+
   function openPaperSource() {
-    if (selectedPaper?.source_url && typeof window !== "undefined") {
-      window.open(selectedPaper.source_url, "_blank", "noopener,noreferrer");
+    const link = resolvedPdfUrl || selectedPaper?.source_url;
+    if (link && typeof window !== "undefined") {
+      window.open(link, "_blank", "noopener,noreferrer");
     }
   }
 
@@ -321,7 +449,7 @@ function ResearchPapersPage({ onBack }: { onBack: () => void }) {
         <div className="papers-download-layout">
           <div className="download-card">
             <h3>Download a Paper</h3>
-            <p className="muted">Provide whatever you have—DOI, title, or URL—and we&apos;ll queue the PDF.</p>
+            <p className="muted">Provide whatever you have: DOI, title, or URL, and we&apos;ll queue the PDF.</p>
             <label>
               Paper Title
               <input value={downloadForm.title} onChange={(e) => handleDownloadFieldChange("title", e.target.value)} placeholder="e.g., Attention Is All You Need" />
@@ -343,16 +471,67 @@ function ResearchPapersPage({ onBack }: { onBack: () => void }) {
             {downloadStatus && <p className="status">{downloadStatus}</p>}
           </div>
           <div className="papers-chat-card">
-            <h3>Summarize with the Assistant</h3>
-            <p className="muted">Chatbot hooks coming soon. You&apos;ll be able to drop PDFs, ask for abstracts, and push highlights to Notes.</p>
-            <div className="chat-placeholder tall">
-              <div className="chat-screen">Chatbot workspace placeholder</div>
+            <div className="manual-head">
+              <div>
+                <h3>Summarize & Chat</h3>
+                <p className="muted">Select a paper, ask for summaries or follow-up questions, and save only the responses you want in Notes.</p>
+              </div>
+              <select value={summaryPaperId ?? ""} onChange={(e) => handleSummaryPaperChange(Number(e.target.value))} disabled={!combinedPapers.length}>
+                {!combinedPapers.length && <option value="">No papers yet</option>}
+                {combinedPapers.map((paper) => (
+                  <option key={paper.id} value={paper.id}>
+                    {paper.title || `Paper ${paper.id}`}
+                  </option>
+                ))}
+              </select>
             </div>
-            <ul className="coming-soon-list">
-              <li>Ask for executive summaries or quizzes.</li>
-              <li>Auto-create notes directly in the editor.</li>
-              <li>Track download status + ingestion logs.</li>
-            </ul>
+            {summaryChatStatus && <p className="status">{summaryChatStatus}</p>}
+            <div className="chat-window summary">
+              <div className="chat-log">
+                {summaryChatHistory.length === 0 && <p className="empty-chat-hint">Ask for a summary to get started.</p>}
+                {summaryChatHistory.map((msg) => (
+                  <div key={msg.id} className={`chat-bubble ${msg.role}`}>
+                    <p>{msg.content}</p>
+                    {msg.role === "assistant" && (
+                      <div className="chat-note-footnote">
+                        {msg.savedNote ? (
+                          <>
+                            <span>
+                              Saved to notes as <strong>{msg.savedNote.title || "Paper Summary"}</strong>
+                            </span>
+                            {onOpenNote && (
+                              <button className="link-button" onClick={() => onOpenNote(msg.savedNote!.id)}>
+                                Open note
+                              </button>
+                            )}
+                          </>
+                        ) : (
+                          <>
+                            <button className="chat-save-btn" onClick={() => handleSaveAssistantMessage(msg.id)} disabled={msg.saving}>
+                              {msg.saving ? "Saving…" : "Save to Notes"}
+                            </button>
+                            {msg.error && <span className="error-inline">{msg.error}</span>}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="chat-input-bar">
+                <textarea
+                  value={summaryChatInput}
+                  onChange={(e) => setSummaryChatInput(e.target.value)}
+                  onKeyDown={handleSummaryChatKeyDown}
+                  placeholder="Ask for a summary or pose a follow-up question…"
+                />
+                <div className="chat-bar-actions">
+                  <button className="primary" onClick={handleSummaryChatSend} disabled={summaryChatLoading || !summaryPaperId}>
+                    {summaryChatLoading ? "Thinking…" : "Send"}
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -360,7 +539,15 @@ function ResearchPapersPage({ onBack }: { onBack: () => void }) {
   );
 }
 
-function NotesPage({ onBack }: { onBack: () => void }) {
+function NotesPage({
+  onBack,
+  focusNoteId,
+  onFocusConsumed
+}: {
+  onBack: () => void;
+  focusNoteId?: number | null;
+  onFocusConsumed?: () => void;
+}) {
   const [papers, setPapers] = useState<Paper[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [form, setForm] = useState(emptyNoteForm());
@@ -439,6 +626,25 @@ function NotesPage({ onBack }: { onBack: () => void }) {
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    if (!focusNoteId || !notes.length) {
+      return;
+    }
+    const target = notes.find((note) => note.id === focusNoteId);
+    if (!target) {
+      return;
+    }
+    setSelectedNoteId(target.id);
+    setForm({
+      id: target.id,
+      title: target.title || "",
+      body: target.body,
+      paperId: undefined
+    });
+    setStatus(null);
+    onFocusConsumed?.();
+  }, [focusNoteId, notes, onFocusConsumed]);
 
   function handleSelect(note: Note) {
     setSelectedNoteId(note.id);
@@ -709,9 +915,24 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
   const [markdownDraft, setMarkdownDraft] = useState<string>(MARKDOWN_PLACEHOLDER);
   const [markdownStatus, setMarkdownStatus] = useState<string | null>(null);
   const [selectedFileName, setSelectedFileName] = useState<string>("question-set.md");
+  const [chatInput, setChatInput] = useState("");
+  const [chatHistory, setChatHistory] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [contexts, setContexts] = useState<QuestionContext[]>([]);
+  const [selectedContextIds, setSelectedContextIds] = useState<string[]>([]);
+  const [contextStatus, setContextStatus] = useState<string | null>(null);
+  const streamControllerRef = useRef<AbortController | null>(null);
+  const assistantIndexRef = useRef<number | null>(null);
+  const completionRef = useRef<Question[] | null>(null);
 
   useEffect(() => {
     refreshSets();
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      streamControllerRef.current?.abort();
+    };
   }, []);
 
   async function refreshSets() {
@@ -895,6 +1116,149 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
     setMarkdownStatus("Markdown editor synced with the structured questions.");
   }
 
+  async function persistGeneratedSet(promptValue: string, generated: Question[]) {
+    if (!generated.length) {
+      return;
+    }
+    try {
+      await createQuestionSet({ prompt: promptValue, questions: generated });
+      await refreshSets();
+      setStatus("Draft saved to LLM library.");
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function handleContextUpload(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+    setContextStatus(`Uploading ${file.name}…`);
+    try {
+      const ctx = await uploadQuestionContext(file);
+      setContexts((prev) => [ctx, ...prev]);
+      setSelectedContextIds((prev) => [...prev, ctx.context_id]);
+      setContextStatus(`Added ${ctx.filename}`);
+    } catch (err) {
+      setError((err as Error).message);
+      setContextStatus(null);
+    } finally {
+      event.target.value = "";
+    }
+  }
+
+  function toggleContextSelection(id: string) {
+    setSelectedContextIds((prev) => (prev.includes(id) ? prev.filter((ctxId) => ctxId !== id) : [...prev, id]));
+  }
+
+  function handleRemoveContext(id: string) {
+    setContexts((prev) => prev.filter((ctx) => ctx.context_id !== id));
+    setSelectedContextIds((prev) => prev.filter((ctxId) => ctxId !== id));
+  }
+
+  function handleChatKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      if (!chatLoading) {
+        handleChatGenerate();
+      }
+    }
+  }
+
+  async function handleChatGenerate() {
+    if (!chatInput.trim()) {
+      setError("Describe the question set you want the assistant to draft.");
+      return;
+    }
+    const instructions = chatInput.trim();
+    const selectedTexts = contexts.filter((ctx) => selectedContextIds.includes(ctx.context_id)).map((ctx) => ctx.text);
+    const combinedContext = selectedTexts.filter(Boolean).join("\n\n");
+    const controller = new AbortController();
+    streamControllerRef.current = controller;
+    completionRef.current = null;
+    setChatLoading(true);
+    setError(null);
+    setStatus(null);
+    setChatHistory((prev) => {
+      const userMessage: { role: "user"; content: string } = { role: "user", content: instructions };
+      const assistantMessage: { role: "assistant"; content: string } = { role: "assistant", content: "" };
+      const next = [...prev, userMessage, assistantMessage];
+      assistantIndexRef.current = next.length - 1;
+      return next;
+    });
+    try {
+      await streamQuestionGeneration(
+        {
+          instructions,
+          context: combinedContext || undefined
+        },
+        (event) => {
+          if (event.type === "chunk" && event.content) {
+            setChatHistory((prev) => {
+              const idx = assistantIndexRef.current;
+              if (idx == null) {
+                return prev;
+              }
+              const next = [...prev];
+              const target = next[idx];
+              if (!target) {
+                return prev;
+              }
+              next[idx] = { ...target, content: `${target.content}${event.content}` };
+              return next;
+            });
+          } else if (event.type === "complete") {
+            completionRef.current = event.questions;
+            setPrompt(instructions);
+            setQuestions(
+              event.questions.length
+                ? event.questions.map((q) => ({
+                    ...q,
+                    options: q.options || undefined,
+                    optionsDraft: (q.options || []).join("\n")
+                  }))
+                : [emptyQuestion()]
+            );
+            setMarkdownDraft(event.markdown || MARKDOWN_PLACEHOLDER);
+            setSelectedFileName("chatbot-question-set.md");
+            setMarkdownStatus("Draft updated from chatbot.");
+            setStatus("Draft received from instructor assistant.");
+            setChatHistory((prev) => {
+              const idx = assistantIndexRef.current;
+              if (idx == null) {
+                return prev;
+              }
+              const next = [...prev];
+              const target = next[idx];
+              if (target && !target.content.trim()) {
+                next[idx] = { ...target, content: "Draft generated. Preview updated." };
+              }
+              return next;
+            });
+            setChatInput("");
+          } else if (event.type === "error") {
+            setError(event.message);
+          }
+        },
+        controller.signal
+      );
+      if (completionRef.current) {
+        await persistGeneratedSet(instructions, completionRef.current);
+      }
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") {
+        setError((err as Error).message);
+      }
+    } finally {
+      setChatLoading(false);
+      streamControllerRef.current = null;
+      assistantIndexRef.current = null;
+      completionRef.current = null;
+    }
+  }
+
+
   const markdownPane = (
     <div className="markdown-panel">
       <div className="markdown-head">
@@ -906,8 +1270,8 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
           <button className="primary" onClick={handleDownloadMarkdown}>
             Save .md
           </button>
-          <button className="ghost" disabled>
-            Send to Canvas (coming soon)
+          <button className="ghost" onClick={() => {}}>
+            Send to Canvas
           </button>
         </div>
       </div>
@@ -925,7 +1289,12 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
         </div>
         <div className="page-actions">
           <button onClick={onBack}>Back</button>
-          <button onClick={startNewSet}>New Set</button>
+          <button onClick={() => {
+            setMode("generate");
+            setMarkdownDraft("");
+            setSelectedFileName("");
+            setMarkdownStatus(null);
+          }}>New Set</button>
         </div>
       </div>
       <div className="question-mode-toggle">
@@ -944,11 +1313,10 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
           className={mode === "upload" ? "primary" : ""}
           onClick={() => {
             setMode("upload");
-            if (!markdownDraft.trim()) {
-              setMarkdownDraft(MARKDOWN_PLACEHOLDER);
-            }
-            if (!selectedFileName) {
-              setSelectedFileName("question-set.md");
+            if (selectedId === null) {
+              setMarkdownDraft("");
+              setSelectedFileName("");
+              setMarkdownStatus(null);
             }
           }}
         >
@@ -959,12 +1327,76 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
       {mode === "generate" ? (
         <div className="dual-pane">
           <div className="chat-pane">
-            <h3>Instructor Assistant Workspace</h3>
-            <p className="muted">Chat with your LLM, upload context, and let it draft the markdown. Placeholder UI for now.</p>
-            <div className="chat-placeholder">
-              <div className="chat-screen">Chatbot interface placeholder</div>
+            <div className="chat-pane-head">
+              <div>
+                <h3>Instructor Assistant Workspace</h3>
+                <p className="muted small">Upload source files, then chat to craft exam-ready question sets.</p>
+              </div>
+              <label className="file-upload compact">
+                <input type="file" accept=".pdf,.ppt,.pptx" onChange={handleContextUpload} />
+                Upload
+              </label>
             </div>
-            <div className="chat-footnote muted">The conversational UI and LLM hooks will live here.</div>
+            <div className="context-strip">
+              <h4>Source Materials</h4>
+              {contexts.length > 0 && (
+                <button className="ghost" onClick={() => { setContexts([]); setSelectedContextIds([]); }}>
+                  Clear all
+                </button>
+              )}
+            </div>
+            {contextStatus && <p className="status">{contextStatus}</p>}
+              <div className="context-scroller">
+                {contexts.map((ctx) => {
+                  const included = selectedContextIds.includes(ctx.context_id);
+                  return (
+                    <div key={ctx.context_id} className={`context-pill ${included ? "selected" : ""}`}>
+                      <div className="context-pill-head">
+                        <span>{ctx.filename}</span>
+                        <small>{Math.round(ctx.characters / 100) / 10}k chars</small>
+                      </div>
+                      <div className="context-pill-actions">
+                        <button className={included ? "pill-btn selected" : "pill-btn"} onClick={() => toggleContextSelection(ctx.context_id)}>
+                          {included ? "Included" : "Include"}
+                        </button>
+                        <button className="pill-btn danger" onClick={() => handleRemoveContext(ctx.context_id)}>
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+                {!contexts.length && <p className="muted">No documents uploaded yet.</p>}
+              </div>
+            <div className="chat-window">
+              <div className="chat-log">
+                {chatHistory.length === 0 && <p className="muted">No conversations yet. Ask for a question set to begin.</p>}
+                {chatHistory.map((msg, idx) => (
+                  <div key={idx} className={`chat-bubble ${msg.role}`}>
+                    <p>{msg.content}</p>
+                  </div>
+                ))}
+              </div>
+              <div className="chat-input-bar">
+                <textarea
+                  value={chatInput}
+                  onChange={(e) => setChatInput(e.target.value)}
+                  onKeyDown={handleChatKeyDown}
+                  placeholder="Ask for a specific exam-ready question set…"
+                />
+              <div className="chat-bar-actions">
+                <button className="primary" onClick={handleChatGenerate} disabled={chatLoading}>
+                  {chatLoading ? "Generating…" : "Send"}
+                </button>
+                {chatLoading && (
+                  <button className="ghost" onClick={() => streamControllerRef.current?.abort()}>
+                    Stop
+                  </button>
+                )}
+                </div>
+              </div>
+            </div>
+            <div className="chat-footnote muted">Powered by LiteLLM + GPT-5 mini. Results sync into the markdown preview automatically.</div>
           </div>
           {markdownPane}
         </div>
