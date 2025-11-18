@@ -5,7 +5,7 @@ This repository contains the full-stack “Instructor Assistant” web app that 
 ## Features
 
 - **Research Library** – Upload papers by DOI/URL/title, preview PDFs inline, delete entries, and summarize via an integrated chatbot that can save responses directly into the notes workspace.
-- **Notes Workspace** – Apple-Notes inspired UI with search, inline highlighting, and word counts. Notes are no longer tied to specific papers and can be searched globally.
+- **Notes Workspace** – Notes UI with search, inline highlighting, and word counts. Any content from the notes can be searched globally.
 - **Question Sets** – Dual workflow:
   - *Generate*: Upload source files, chat with the instructor assistant, and stream exam-ready questions + Markdown. Choose between OpenAI GPT and a local Llama 3.1 model with inline tool access.
   - *Upload*: Import existing Markdown, edit, or manage previously generated sets.
