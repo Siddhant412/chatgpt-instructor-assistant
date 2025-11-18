@@ -8,13 +8,19 @@ import uuid
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+import logging
 
+import requests
 from litellm import acompletion, completion
 from pptx import Presentation
 from pypdf import PdfReader
 
 from server.db import get_conn
 from server.tools.canvas_export import render_canvas_markdown
+from . import context_store
+
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
+logger = logging.getLogger(__name__)
 from .schemas import (
     PaperChatMessage,
     Question,
@@ -34,6 +40,10 @@ else:
     TEMPERATURE = 0.2
 MAX_TOKENS = int(os.getenv("LITELLM_MAX_TOKENS", "4000"))
 MAX_CONTEXT_CHARS = int(os.getenv("QUESTION_CONTEXT_CHAR_LIMIT", "60000"))
+DEFAULT_PROVIDER = (os.getenv("LLM_PROVIDER") or "openai").strip().lower()
+LOCAL_LLM_URL = (os.getenv("LOCAL_LLM_URL") or "http://localhost:11434").rstrip("/")
+LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "llama3.1:8b")
+LOCAL_LLM_TIMEOUT = int(os.getenv("LOCAL_LLM_TIMEOUT", "60"))
 TYPE_PATTERNS = {
     "mcq": r"mcqs?|multiple\s+choice(?:\s+questions?)?",
     "short_answer": r"short[-\s]?answer(?:\s+questions?)?",
@@ -54,10 +64,17 @@ def _completion_limit_args(model_name: str) -> Dict[str, Any]:
 
 
 def generate_questions(payload: QuestionGenerationRequest) -> QuestionGenerationResponse:
+    provider = _resolve_provider(payload)
+    messages = _build_messages(payload, provider)
+    if provider == "local":
+        return _generate_questions_local(payload, messages)
+    return _generate_questions_openai(payload, messages)
+
+
+def _generate_questions_openai(payload: QuestionGenerationRequest, messages: List[Dict[str, str]]) -> QuestionGenerationResponse:
     if not os.getenv("OPENAI_API_KEY") and not os.getenv("LITELLM_API_KEY"):
         raise QuestionGenerationError("OPENAI_API_KEY (or LITELLM_API_KEY) must be set to use the question generator.")
 
-    messages = _build_messages(payload)
     comp_kwargs = _completion_limit_args(DEFAULT_MODEL)
     try:
         response = completion(
@@ -81,6 +98,17 @@ def generate_questions(payload: QuestionGenerationRequest) -> QuestionGeneration
 
 
 async def stream_generate_questions(payload: QuestionGenerationRequest) -> AsyncGenerator[Dict[str, Any], None]:
+    provider = _resolve_provider(payload)
+    if provider == "local":
+        result = _generate_questions_local(payload, _build_messages(payload, provider))
+        yield {
+            "type": "complete",
+            "questions": [q.model_dump() for q in result.questions],
+            "markdown": result.markdown,
+            "raw_response": result.raw_response,
+        }
+        return
+
     if not os.getenv("OPENAI_API_KEY") and not os.getenv("LITELLM_API_KEY"):
         raise QuestionGenerationError("OPENAI_API_KEY (or LITELLM_API_KEY) must be set to use the question generator.")
 
@@ -117,7 +145,7 @@ async def stream_generate_questions(payload: QuestionGenerationRequest) -> Async
     }
 
 
-def _build_messages(payload: QuestionGenerationRequest) -> List[Dict[str, str]]:
+def _build_messages(payload: QuestionGenerationRequest, provider: str = "openai") -> List[Dict[str, str]]:
     derived_type_counts, derived_total = _derive_type_counts(payload.instructions)
     type_instruction = "Feel free to use MCQ, short_answer, true_false, or essay question types."
     if payload.question_types:
@@ -138,6 +166,7 @@ def _build_messages(payload: QuestionGenerationRequest) -> List[Dict[str, str]]:
         count_instruction = f"Generate exactly {derived_total} questions total, matching the per-type counts above."
 
     context_block = f"\nContext:\n{payload.context.strip()}" if payload.context else ""
+    mcq_rule = "For every multiple choice question, provide four distinct answer options (a, b, c, d) in the order presented."
 
     schema_block = """
 Return JSON with this shape:
@@ -171,10 +200,58 @@ Return JSON with this shape:
         f"{type_instruction}\n"
         f"{count_instruction}\n"
         f"{schema_block}\n"
+        f"{mcq_rule}\n"
         f"{context_block}\n"
         f"Ensure answers reflect the context. {constraint_note}"
     )
 
+    if provider == "local":
+        return _build_local_messages(payload, user_prompt)
+
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def _build_local_messages(payload: QuestionGenerationRequest, base_prompt: str) -> List[Dict[str, str]]:
+    contexts = context_store.list_contexts()
+    if contexts:
+        context_lines = "\n".join(
+            f"- {ctx.context_id}: {ctx.filename} ({ctx.characters} chars, preview: {ctx.preview[:120]}...)"
+            for ctx in contexts
+        )
+        context_note = (
+            "Uploaded files are available through tools. Call 'list_contexts' to see all IDs, then 'read_context' to fetch excerpts.\n"
+            f"Known files:\n{context_lines}\n"
+        )
+    else:
+        context_note = (
+            "No uploaded documents are currently available. If you still need context, ask the instructor for more details."
+        )
+
+    tool_instructions = """
+You must respond ONLY with JSON objects. Valid patterns:
+- {"action":"call_tool","tool":"list_contexts","arguments":{}}
+- {"action":"call_tool","tool":"read_context","arguments":{"context_id":"CTX_ID","start":0,"length":4000}}
+- {"action":"final","content":<questions JSON matching the schema>}
+
+Never send plain text or Markdown. If your previous reply wasn't valid JSON, immediately send a JSON reminder or the correct response.
+
+Tools:
+- list_contexts: returns metadata for each uploaded file (context_id, filename, preview, length).
+- read_context: arguments {context_id (string, required), start (int, optional), length (int <= 4000, optional)}. Returns a text excerpt.
+
+When you have enough information, produce the final JSON with the required "questions" array and use {"action":"final", "content": ...}.
+"""
+
+    system_prompt = (
+        "You are an experienced instructor who can read uploaded source materials via tools and then write exam-ready questions. "
+        "Do not invent file contents—call the tools when you need information. "
+        "Follow the JSON-only protocol strictly."
+    )
+
+    user_prompt = f"{base_prompt}\n\n{context_note}\n{tool_instructions}"
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -205,13 +282,16 @@ def _parse_questions(content: str) -> List[Question]:
             options = [str(o).strip() for o in options if str(o).strip()]
         else:
             options = None
+        answer_raw = entry.get("answer") or entry.get("solution") or ""
+        explanation_raw = entry.get("explanation") or entry.get("rationale") or ""
+        reference_raw = entry.get("reference") or entry.get("source") or ""
         question = Question(
             kind=(entry.get("kind") or entry.get("type") or "short_answer").lower(),
             text=text.strip(),
             options=options,
-            answer=(entry.get("answer") or entry.get("solution") or "").strip() or None,
-            explanation=(entry.get("explanation") or entry.get("rationale") or "").strip() or None,
-            reference=(entry.get("reference") or entry.get("source") or "").strip() or None,
+            answer=str(answer_raw).strip() or None,
+            explanation=str(explanation_raw).strip() or None,
+            reference=str(reference_raw).strip() or None,
         )
         normalized.append(question)
 
@@ -246,6 +326,154 @@ def _derive_type_counts(instructions: str) -> Tuple[Dict[str, int], Optional[int
             total = int(general.group(1))
 
     return counts, total
+
+
+def _generate_questions_local(payload: QuestionGenerationRequest, messages: List[Dict[str, str]]) -> QuestionGenerationResponse:
+    raw = _run_local_tool_session(messages)
+    questions = _parse_questions(raw)
+    markdown = render_canvas_markdown(payload.instructions, [q.model_dump() for q in questions], {})
+    return QuestionGenerationResponse(
+        questions=questions,
+        markdown=markdown,
+        raw_response=raw,
+    )
+
+
+def _call_local_llm(messages: List[Dict[str, str]]) -> str:
+    if not LOCAL_LLM_URL:
+        raise QuestionGenerationError("Set LOCAL_LLM_URL to use the local LLM provider.")
+    url = f"{LOCAL_LLM_URL}/api/chat"
+    payload = {
+        "model": LOCAL_LLM_MODEL,
+        "messages": messages,
+        "stream": False,
+    }
+    try:
+        response = requests.post(url, json=payload, timeout=LOCAL_LLM_TIMEOUT)
+    except requests.RequestException as exc:
+        raise QuestionGenerationError(f"Local LLM request failed: {exc}") from exc
+    if response.status_code >= 400:
+        raise QuestionGenerationError(f"Local LLM error: {response.text}")
+    data = response.json()
+    content = None
+    if isinstance(data.get("message"), dict):
+        content = data["message"].get("content")
+    if not content and isinstance(data.get("messages"), list) and data["messages"]:
+        content = data["messages"][-1].get("content")
+    if not content and isinstance(data.get("response"), str):
+        content = data["response"]
+    if not content:
+        raise QuestionGenerationError("Local LLM did not return any content.")
+    return content
+
+
+def _run_local_tool_session(messages: List[Dict[str, str]]) -> str:
+    conversation = [dict(msg) for msg in messages]
+    for step in range(16):
+        reply = _call_local_llm(conversation)
+        cleaned = reply.strip()
+        data = _try_parse_json(cleaned)
+        if isinstance(data, dict) and data.get("action") == "call_tool":
+            tool_name = data.get("tool")
+            arguments = data.get("arguments") or {}
+            logger.info("[local-llm] tool=%s args=%s", tool_name, arguments)
+            tool_output = _execute_local_tool(tool_name, arguments)
+            conversation.append({"role": "assistant", "content": cleaned})
+            conversation.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"Tool '{tool_name}' result:\n{json.dumps(tool_output)}\n"
+                        "Continue following the instructions. Remember to reply with JSON when calling tools or when producing the final answer."
+                    ),
+                }
+            )
+            continue
+        if isinstance(data, dict) and data.get("action") == "final":
+            final_content = data.get("content")
+            if not final_content:
+                raise QuestionGenerationError("Local LLM returned an empty final payload.")
+            if isinstance(final_content, (dict, list)):
+                final_content = json.dumps(final_content)
+            else:
+                final_content = str(final_content)
+            logger.info("[local-llm] final response after %s steps", step + 1)
+            return final_content
+        logger.warning("[local-llm] unstructured response: %s", cleaned[:200])
+        conversation.append({"role": "assistant", "content": cleaned})
+        conversation.append(
+            {
+                "role": "user",
+                "content": (
+                    "Reminder: respond only with JSON objects. Use {\"action\":\"call_tool\",...} for tool calls or {\"action\":\"final\",...} when returning the final questions."
+                ),
+            }
+        )
+        continue
+    raise QuestionGenerationError("Local LLM exceeded tool call limit.")
+
+
+def _execute_local_tool(name: Optional[str], arguments: Dict[str, Any]) -> Dict[str, Any]:
+    if name == "list_contexts":
+        return {"contexts": _tool_list_contexts()}
+    if name == "read_context":
+        return _tool_read_context(arguments)
+    logger.warning("[local-llm] unknown tool requested: %s", name)
+    return {"error": f"Unknown tool '{name}'."}
+
+
+def _tool_list_contexts() -> List[Dict[str, Any]]:
+    contexts = context_store.list_contexts()
+    return [
+        {
+            "context_id": ctx.context_id,
+            "filename": ctx.filename,
+            "characters": ctx.characters,
+            "preview": ctx.preview,
+        }
+        for ctx in contexts
+    ]
+
+
+def _tool_read_context(arguments: Dict[str, Any]) -> Dict[str, Any]:
+    context_id = (arguments.get("context_id") or "").strip()
+    if not context_id:
+        return {"error": "context_id is required."}
+    ctx = context_store.get_context(context_id)
+    if not ctx:
+        return {"error": f"context '{context_id}' not found."}
+    try:
+        start = max(0, int(arguments.get("start", 0)))
+    except (TypeError, ValueError):
+        start = 0
+    try:
+        length = int(arguments.get("length", 4000))
+    except (TypeError, ValueError):
+        length = 4000
+    length = max(500, min(length, 6000))
+    text = ctx.text or ""
+    snippet = text[start : start + length]
+    return {
+        "context_id": context_id,
+        "start": start,
+        "length": len(snippet),
+        "has_more": start + len(snippet) < len(text),
+        "content": snippet,
+    }
+
+
+def _try_parse_json(raw: str) -> Optional[Any]:
+    try:
+        return json.loads(_strip_code_fences(raw))
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def _resolve_provider(payload: QuestionGenerationRequest) -> str:
+    provider = (payload.provider or DEFAULT_PROVIDER or "openai").strip().lower()
+    if provider not in {"openai", "local"}:
+        provider = DEFAULT_PROVIDER or "openai"
+    return provider
 
 
 def summarize_paper_chat(paper_id: int, messages: List[PaperChatMessage]) -> Dict[str, Any]:

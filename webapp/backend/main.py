@@ -43,6 +43,7 @@ from .services import (
     summarize_paper_chat,
     stream_generate_questions,
 )
+from . import context_store
 from .canvas_service import CanvasPushError, push_question_set_to_canvas
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
@@ -246,7 +247,9 @@ async def upload_question_context(file: UploadFile = File(...)) -> QuestionConte
     if not contents:
         raise HTTPException(status_code=400, detail="Uploaded file was empty.")
     try:
-        return await extract_context_from_upload(file.filename or "upload", contents)
+        ctx = await extract_context_from_upload(file.filename or "upload", contents)
+        context_store.save_context(ctx)
+        return ctx
     except QuestionGenerationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

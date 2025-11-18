@@ -917,6 +917,28 @@ button.paper-delete:hover {
   gap: 12px;
 }
 
+.chat-pane-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.provider-select {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+  color: #475569;
+}
+
+.provider-select select {
+  border-radius: 999px;
+  border: 1px solid #cbd5f5;
+  padding: 6px 20px;
+  font-size: 0.9rem;
+  background: #fff;
+}
+
 .muted.small {
   font-size: 0.85rem;
 }

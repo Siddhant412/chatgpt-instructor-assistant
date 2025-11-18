@@ -48,6 +48,7 @@ export interface QuestionGenerationPayload {
   context?: string;
   question_count?: number;
   question_types?: string[];
+  provider?: string;
 }
 
 export interface QuestionGenerationResult {

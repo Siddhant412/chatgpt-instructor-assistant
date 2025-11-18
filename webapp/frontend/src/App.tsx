@@ -16,9 +16,20 @@ import {
   streamQuestionGeneration,
   downloadPaper,
   chatPaper,
+  generateQuestionSetWithLLM,
   pushQuestionSetToCanvas
 } from "./api";
-import type { CanvasPushResult, ChatMessage, Note, Page, Paper, Question, QuestionContext, QuestionSetMeta } from "./types";
+import type {
+  CanvasPushResult,
+  ChatMessage,
+  Note,
+  Page,
+  Paper,
+  Question,
+  QuestionContext,
+  QuestionGenerationPayload,
+  QuestionSetMeta
+} from "./types";
 
 type QuestionForm = Question & { optionsDraft?: string };
 type QuestionMode = "generate" | "upload";
@@ -937,9 +948,22 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
   const [canvasStatus, setCanvasStatus] = useState<string | null>(null);
   const [canvasResult, setCanvasResult] = useState<CanvasPushResult | null>(null);
   const [canvasLoading, setCanvasLoading] = useState(false);
+  const [llmProvider, setLlmProvider] = useState<"openai" | "local">(() => {
+    if (typeof window === "undefined") {
+      return "openai";
+    }
+    const stored = window.localStorage.getItem("ia.llmProvider");
+    return stored === "local" || stored === "openai" ? stored : "openai";
+  });
   const streamControllerRef = useRef<AbortController | null>(null);
   const assistantIndexRef = useRef<number | null>(null);
   const completionRef = useRef<Question[] | null>(null);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("ia.llmProvider", llmProvider);
+    }
+  }, [llmProvider]);
 
   useEffect(() => {
     refreshSets();
@@ -1243,12 +1267,55 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
     const instructions = chatInput.trim();
     const selectedTexts = contexts.filter((ctx) => selectedContextIds.includes(ctx.context_id)).map((ctx) => ctx.text);
     const combinedContext = selectedTexts.filter(Boolean).join("\n\n");
-    const controller = new AbortController();
-    streamControllerRef.current = controller;
-    completionRef.current = null;
     setChatLoading(true);
     setError(null);
     setStatus(null);
+    const payload = {
+      instructions,
+      context: combinedContext || undefined,
+      provider: llmProvider
+    } as QuestionGenerationPayload;
+
+    if (llmProvider === "local") {
+      try {
+        const result = await generateQuestionSetWithLLM(payload);
+        setPrompt(instructions);
+        setQuestions(
+          result.questions.length
+            ? result.questions.map((q) => ({
+                ...q,
+                options: q.options || undefined,
+                optionsDraft: (q.options || []).join("\n")
+              }))
+            : [emptyQuestion()]
+        );
+        setMarkdownDraft(result.markdown || MARKDOWN_PLACEHOLDER);
+        setSelectedFileName("chatbot-question-set.md");
+        setMarkdownStatus("Draft updated from local model.");
+        setStatus("Draft received from local LLM.");
+        setChatHistory((prev) => [
+          ...prev,
+          { role: "user", content: instructions },
+          { role: "assistant", content: result.raw_response || "Draft generated. Preview updated." }
+        ]);
+        setChatInput("");
+        if (result.questions?.length) {
+          await persistGeneratedSet(instructions, result.questions);
+        }
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setChatLoading(false);
+        streamControllerRef.current = null;
+        assistantIndexRef.current = null;
+        completionRef.current = null;
+      }
+      return;
+    }
+
+    const controller = new AbortController();
+    streamControllerRef.current = controller;
+    completionRef.current = null;
     setChatHistory((prev) => {
       const userMessage: { role: "user"; content: string } = { role: "user", content: instructions };
       const assistantMessage: { role: "assistant"; content: string } = { role: "assistant", content: "" };
@@ -1258,10 +1325,7 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
     });
     try {
       await streamQuestionGeneration(
-        {
-          instructions,
-          context: combinedContext || undefined
-        },
+        payload,
         (event) => {
           if (event.type === "chunk" && event.content) {
             setChatHistory((prev) => {
@@ -1450,10 +1514,23 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
                 <h3>Instructor Assistant Workspace</h3>
                 <p className="muted small">Upload source files, then chat to craft exam-ready question sets.</p>
               </div>
-              <label className="file-upload compact">
-                <input type="file" accept=".pdf,.ppt,.pptx" onChange={handleContextUpload} />
-                Upload
-              </label>
+              <div className="chat-pane-controls">
+                <div className="provider-select">
+                  <label htmlFor="provider-choice">LLM Provider</label>
+                  <select
+                    id="provider-choice"
+                    value={llmProvider}
+                    onChange={(e) => setLlmProvider(e.target.value === "local" ? "local" : "openai")}
+                  >
+                    <option value="openai">OpenAI GPT</option>
+                    <option value="local">Local (Llama 3.1)</option>
+                  </select>
+                </div>
+                <label className="file-upload compact">
+                  <input type="file" accept=".pdf,.ppt,.pptx" onChange={handleContextUpload} />
+                  Upload
+                </label>
+              </div>
             </div>
             <div className="context-strip">
               <h4>Source Materials</h4>

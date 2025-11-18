@@ -42,6 +42,10 @@ class QuestionGenerationRequest(BaseModel):
     context: Optional[str] = None
     question_count: Optional[int] = Field(default=None, ge=1, le=100)
     question_types: Optional[List[str]] = None
+    provider: Optional[str] = Field(
+        default=None,
+        description="LLM provider identifier, e.g., 'openai' or 'local'."
+    )
     format: Optional[str] = Field(
         default="json",
         description="Desired response format; currently only 'json' is supported."
