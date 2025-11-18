@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -92,3 +92,21 @@ class PaperChatMessage(BaseModel):
 
 class PaperChatRequest(BaseModel):
     messages: List[PaperChatMessage] = Field(..., min_length=1)
+
+
+class CanvasPushRequest(BaseModel):
+    title: Optional[str] = Field(default=None, max_length=255)
+    course_id: Optional[str] = Field(default=None, min_length=1)
+    time_limit: Optional[int] = Field(default=None, ge=1, le=600)
+    publish: Optional[bool] = None
+    points: Optional[Dict[str, int]] = None
+
+
+class CanvasPushResponse(BaseModel):
+    quiz_id: int
+    quiz_url: str
+    quiz_title: str
+    course_id: str
+    total_questions: int
+    uploaded_questions: int
+    published: bool

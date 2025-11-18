@@ -46,17 +46,25 @@ class QuestionGenerationError(RuntimeError):
     """Raised when the LLM output cannot be parsed."""
 
 
+def _completion_limit_args(model_name: str) -> Dict[str, Any]:
+    """Return the correct token-limit argument for the selected model."""
+    if "gpt-5" in (model_name or "").lower():
+        return {"max_completion_tokens": MAX_TOKENS}
+    return {"max_tokens": MAX_TOKENS}
+
+
 def generate_questions(payload: QuestionGenerationRequest) -> QuestionGenerationResponse:
     if not os.getenv("OPENAI_API_KEY") and not os.getenv("LITELLM_API_KEY"):
         raise QuestionGenerationError("OPENAI_API_KEY (or LITELLM_API_KEY) must be set to use the question generator.")
 
     messages = _build_messages(payload)
+    comp_kwargs = _completion_limit_args(DEFAULT_MODEL)
     try:
         response = completion(
             model=DEFAULT_MODEL,
             messages=messages,
             temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
+            **comp_kwargs,
         )
     except Exception as exc:
         raise QuestionGenerationError(f"LLM request failed: {exc}") from exc
@@ -77,13 +85,14 @@ async def stream_generate_questions(payload: QuestionGenerationRequest) -> Async
         raise QuestionGenerationError("OPENAI_API_KEY (or LITELLM_API_KEY) must be set to use the question generator.")
 
     messages = _build_messages(payload)
+    comp_kwargs = _completion_limit_args(DEFAULT_MODEL)
     try:
         stream = await acompletion(
             model=DEFAULT_MODEL,
             messages=messages,
             temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
             stream=True,
+            **comp_kwargs,
         )
     except Exception as exc:
         raise QuestionGenerationError(f"LLM request failed: {exc}") from exc
@@ -266,7 +275,7 @@ def summarize_paper_chat(paper_id: int, messages: List[PaperChatMessage]) -> Dic
             model=DEFAULT_MODEL,
             messages=base_messages,
             temperature=TEMPERATURE,
-            max_tokens=MAX_TOKENS,
+            **_completion_limit_args(DEFAULT_MODEL),
         )
     except Exception as exc:
         raise QuestionGenerationError(f"LLM request failed: {exc}") from exc

@@ -80,3 +80,21 @@ export interface PaperChatResponse {
   paper_title?: string | null;
   suggested_title?: string | null;
 }
+
+export interface CanvasPushRequest {
+  title?: string;
+  course_id?: string;
+  time_limit?: number;
+  publish?: boolean;
+  points?: Record<string, number>;
+}
+
+export interface CanvasPushResult {
+  quiz_id: number;
+  quiz_url: string;
+  quiz_title: string;
+  course_id: string;
+  total_questions: number;
+  uploaded_questions: number;
+  published: boolean;
+}

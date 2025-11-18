@@ -15,13 +15,20 @@ import {
   uploadQuestionContext,
   streamQuestionGeneration,
   downloadPaper,
-  chatPaper
+  chatPaper,
+  pushQuestionSetToCanvas
 } from "./api";
-import type { ChatMessage, Note, Page, Paper, Question, QuestionContext, QuestionSetMeta } from "./types";
+import type { CanvasPushResult, ChatMessage, Note, Page, Paper, Question, QuestionContext, QuestionSetMeta } from "./types";
 
 type QuestionForm = Question & { optionsDraft?: string };
 type QuestionMode = "generate" | "upload";
 type PaperMode = "library" | "ingest";
+type CanvasFormState = {
+  title: string;
+  courseId: string;
+  timeLimit: string;
+  publish: boolean;
+};
 
 const emptyNoteForm = (): { id?: number; title: string; body: string; paperId?: number | null } => ({
   title: "",
@@ -766,8 +773,8 @@ function NotesPage({
                 className={`note-card ${note.id === selectedNoteId ? "active" : ""}`}
                 onClick={() => handleSelect(note)}
               >
-                <div>
-                  <span className="note-title">{truncateNoteTitle(note.title)}</span>
+                <div className="note-card-content">
+                  <span className="note-title">{truncateNoteTitle(note.title, 28)}</span>
                   {searchQuery && (
                     <p className="note-snippet">
                       {matchPreview.find((match) => match.id === note.id)?.snippet || "Contains match"}
@@ -838,16 +845,15 @@ function friendlyDate(value?: string | null): string {
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function truncateNoteTitle(value?: string | null, maxWords = 6): string {
+function truncateNoteTitle(value?: string | null, maxChars = 26): string {
   const title = (value || "").trim();
   if (!title) {
     return "Untitled note";
   }
-  const words = title.split(/\s+/);
-  if (words.length <= maxWords) {
+  if (title.length <= maxChars) {
     return title;
   }
-  return `${words.slice(0, maxWords).join(" ")}…`;
+  return `${title.slice(0, maxChars - 1).trim()}…`;
 }
 
 function paperDomain(url?: string | null): string {
@@ -921,6 +927,16 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
   const [contexts, setContexts] = useState<QuestionContext[]>([]);
   const [selectedContextIds, setSelectedContextIds] = useState<string[]>([]);
   const [contextStatus, setContextStatus] = useState<string | null>(null);
+  const [canvasPanelOpen, setCanvasPanelOpen] = useState(false);
+  const [canvasForm, setCanvasForm] = useState<CanvasFormState>({
+    title: "",
+    courseId: "",
+    timeLimit: "0",
+    publish: false
+  });
+  const [canvasStatus, setCanvasStatus] = useState<string | null>(null);
+  const [canvasResult, setCanvasResult] = useState<CanvasPushResult | null>(null);
+  const [canvasLoading, setCanvasLoading] = useState(false);
   const streamControllerRef = useRef<AbortController | null>(null);
   const assistantIndexRef = useRef<number | null>(null);
   const completionRef = useRef<Question[] | null>(null);
@@ -964,6 +980,9 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
       );
       syncMarkdownFromQuestions(data.question_set.prompt || "", data.questions, data.question_set.canvas_md_path, id);
       setStatus(null);
+      setCanvasPanelOpen(false);
+      setCanvasStatus(null);
+      setCanvasResult(null);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -980,6 +999,11 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
     setSelectedFileName("question-set.md");
     setMarkdownStatus(null);
     setStatus(null);
+    setCanvasPanelOpen(false);
+    setCanvasStatus(null);
+    setCanvasResult(null);
+    setCanvasLoading(false);
+    setCanvasForm({ title: "", courseId: "", timeLimit: "0", publish: false });
   }
 
   function handleQuestionChange(index: number, updates: Partial<QuestionForm>) {
@@ -1004,6 +1028,51 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
 
   function removeQuestion(idx: number) {
     setQuestions((prev) => (prev.length === 1 ? prev : prev.filter((_, i) => i !== idx)));
+  }
+
+  function handleCanvasFieldChange<K extends keyof CanvasFormState>(field: K, value: CanvasFormState[K]) {
+    setCanvasForm((prev) => ({
+      ...prev,
+      [field]: value
+    }));
+  }
+
+  async function handleCanvasPush() {
+    if (!selectedId) {
+      setCanvasStatus("Save this question set before sending it to Canvas.");
+      return;
+    }
+    const trimmedTitle = canvasForm.title.trim();
+    const trimmedCourse = canvasForm.courseId.trim();
+    const parsedTime = Number(canvasForm.timeLimit);
+    const timeLimit = Number.isFinite(parsedTime) && parsedTime > 0 ? Math.floor(parsedTime) : undefined;
+    setCanvasLoading(true);
+    setCanvasStatus("Sending to Canvas…");
+    setCanvasResult(null);
+    try {
+      const result = await pushQuestionSetToCanvas(selectedId, {
+        title: trimmedTitle || undefined,
+        course_id: trimmedCourse || undefined,
+        time_limit: timeLimit,
+        publish: canvasForm.publish
+      });
+      setCanvasResult(result);
+      setCanvasStatus(`Quiz created on Canvas (ID ${result.quiz_id}).`);
+    } catch (err) {
+      setCanvasStatus((err as Error).message);
+    } finally {
+      setCanvasLoading(false);
+    }
+  }
+
+  function toggleCanvasPanel() {
+    if (!selectedId) {
+      setCanvasPanelOpen(true);
+      setCanvasStatus("Save this question set before sending it to Canvas.");
+      return;
+    }
+    setCanvasPanelOpen((prev) => !prev);
+    setCanvasStatus(null);
   }
 
   const normalizedQuestions = useMemo(() => {
@@ -1270,12 +1339,61 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
           <button className="primary" onClick={handleDownloadMarkdown}>
             Save .md
           </button>
-          <button className="ghost" onClick={() => {}}>
-            Send to Canvas
+          <button className="ghost" onClick={toggleCanvasPanel} disabled={canvasLoading}>
+            {canvasPanelOpen ? "Close Canvas Push" : "Send to Canvas"}
           </button>
         </div>
       </div>
       <textarea className="markdown-textarea" value={markdownDraft} onChange={(e) => { setMarkdownDraft(e.target.value); setMarkdownStatus(null); }} rows={20} />
+      {canvasPanelOpen && (
+        <div className="canvas-panel">
+          <div className="canvas-grid">
+            <label>
+              Quiz title
+              <input type="text" value={canvasForm.title} placeholder="" onChange={(e) => handleCanvasFieldChange("title", e.target.value)} />
+            </label>
+            <label>
+              Course ID
+              <input type="text" value={canvasForm.courseId} placeholder="" onChange={(e) => handleCanvasFieldChange("courseId", e.target.value)} />
+            </label>
+            <label>
+              Time limit (minutes)
+              <input
+                type="number"
+                min={0}
+                value={canvasForm.timeLimit}
+                onChange={(e) => handleCanvasFieldChange("timeLimit", e.target.value)}
+              />
+            </label>
+            <label className="checkbox-field">
+              <input
+                type="checkbox"
+                checked={canvasForm.publish}
+                onChange={(e) => handleCanvasFieldChange("publish", e.target.checked)}
+              />
+              Publish immediately on Canvas
+            </label>
+          </div>
+          <div className="canvas-panel-actions">
+            <button className="primary" onClick={handleCanvasPush} disabled={canvasLoading || !selectedId}>
+              {canvasLoading ? "Sending…" : "Push to Canvas"}
+            </button>
+            <button onClick={() => setCanvasPanelOpen(false)}>Close</button>
+          </div>
+          {canvasStatus && <p className="status">{canvasStatus}</p>}
+          {canvasResult && (
+            <div className="canvas-result">
+              <p>
+                Uploaded {canvasResult.uploaded_questions}/{canvasResult.total_questions} questions to{" "}
+                <strong>{canvasResult.quiz_title}</strong>.
+              </p>
+              <a href={canvasResult.quiz_url} target="_blank" rel="noreferrer">
+                Open quiz in Canvas
+              </a>
+            </div>
+          )}
+        </div>
+      )}
       {markdownStatus && <p className="status">{markdownStatus}</p>}
     </div>
   );
@@ -1426,7 +1544,7 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
                         {set.count ?? 0} questions • {set.created_at ? new Date(set.created_at).toLocaleDateString() : "—"}
                       </span>
                     </div>
-                    <button className="danger ghost" onClick={() => handleDeleteSet(set.id)}>
+                    <button className="set-delete" onClick={() => handleDeleteSet(set.id)} aria-label="Delete question set">
                       ×
                     </button>
                   </li>

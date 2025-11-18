@@ -9,7 +9,9 @@ import {
   QuestionGenerationResult,
   QuestionSetMeta,
   QuestionSetPayload,
-  QuestionStreamEvent
+  QuestionStreamEvent,
+  CanvasPushRequest,
+  CanvasPushResult
 } from "./types";
 
 const DEFAULT_BASE = (import.meta.env.VITE_API_BASE as string | undefined) || "http://localhost:8010/api";
@@ -182,5 +184,12 @@ export async function chatPaper(paperId: number, messages: ChatMessage[]): Promi
   return request<PaperChatResponse>(`/papers/${paperId}/chat`, {
     method: "POST",
     body: JSON.stringify({ messages })
+  });
+}
+
+export async function pushQuestionSetToCanvas(setId: number, input: CanvasPushRequest): Promise<CanvasPushResult> {
+  return request<CanvasPushResult>(`/question-sets/${setId}/canvas`, {
+    method: "POST",
+    body: JSON.stringify(input)
   });
 }

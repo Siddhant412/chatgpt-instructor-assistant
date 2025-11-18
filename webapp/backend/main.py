@@ -23,6 +23,8 @@ from server.tools.add_paper import add_paper
 from server.tools.delete_paper import delete_paper as delete_paper_record
 
 from .schemas import (
+    CanvasPushRequest,
+    CanvasPushResponse,
     NoteCreate,
     NoteUpdate,
     PaperChatRequest,
@@ -41,6 +43,7 @@ from .services import (
     summarize_paper_chat,
     stream_generate_questions,
 )
+from .canvas_service import CanvasPushError, push_question_set_to_canvas
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
 
@@ -290,6 +293,20 @@ async def paper_summary_chat(paper_id: int, payload: PaperChatRequest) -> Dict[s
     except QuestionGenerationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return data
+
+
+@app.post("/api/question-sets/{set_id}/canvas")
+def push_question_set_canvas(set_id: int, payload: CanvasPushRequest) -> Dict[str, Any]:
+    data = get_question_set(set_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Question set not found.")
+    try:
+        result = push_question_set_to_canvas(set_id, data, payload)
+    except CanvasPushError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return CanvasPushResponse(**result)
 
 
 if __name__ == "__main__":
