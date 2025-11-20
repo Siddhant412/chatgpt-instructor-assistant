@@ -85,7 +85,25 @@ The Vite dev server runs at `http://localhost:5173`
 2. In the Question Sets page, pick “Local (Llama 3.1)” from the provider dropdown.
 3. Upload PDFs/PPTX: the backend extracts text and stores it in `context_store`. The local LLM can call the inline tools to list and read excerpts before generating JSON.
 
-Logs prefixed with `[local-llm]` show each tool invocation and whether the model produced valid JSON.
+
+### Local MCP Server for Question Sets
+
+To start the MCP server for local LLM, run the following command from the root directory (make sure .webenv is activated):
+
+```bash
+python -m webapp.mcp_server.app
+```
+
+Set `LOCAL_MCP_SERVER_URL` in the `.env` to the exposed `/mcp` endpoint (for example `http://127.0.0.1:8000/mcp`).
+
+The server exposes these tools:
+
+- `upload_context(filename, data_b64)` – send a base64-encoded PDF/PPT(X) file, which is extracted and added to the in-memory context store.
+- `list_contexts()` – returns metadata (id, filename, length, preview) for every uploaded context.
+- `read_context(context_id, start=0, length=4000)` – fetches a text slice from a context so the model can page through long documents.
+- `delete_context(context_id)` – removes a context entry.
+- `generate_question_set(instructions, context_ids?, provider?, question_count?, question_types?)` – invokes the shared `generate_questions` pipeline and returns the structured questions plus Canvas-ready Markdown.
+
 
 ## Canvas Push Workflow
 

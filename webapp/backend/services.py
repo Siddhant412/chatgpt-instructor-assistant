@@ -18,6 +18,7 @@ from pypdf import PdfReader
 from server.db import get_conn
 from server.tools.canvas_export import render_canvas_markdown
 from . import context_store
+from .mcp_client import MCPClientError, call_tool as call_mcp_tool, is_configured as mcp_configured
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 logger = logging.getLogger(__name__)
@@ -145,6 +146,26 @@ async def stream_generate_questions(payload: QuestionGenerationRequest) -> Async
     }
 
 
+def _list_available_contexts() -> List[Dict[str, Any]]:
+    if mcp_configured():
+        try:
+            payload = call_mcp_tool("list_contexts", {})
+            contexts = payload.get("contexts") if isinstance(payload, dict) else None
+            if isinstance(contexts, list):
+                return contexts
+        except MCPClientError as exc:
+            logger.warning("Failed to list contexts via MCP: %s", exc)
+    return [
+        {
+            "context_id": ctx.context_id,
+            "filename": ctx.filename,
+            "characters": ctx.characters,
+            "preview": ctx.preview,
+        }
+        for ctx in context_store.list_contexts()
+    ]
+
+
 def _build_messages(payload: QuestionGenerationRequest, provider: str = "openai") -> List[Dict[str, str]]:
     derived_type_counts, derived_total = _derive_type_counts(payload.instructions)
     type_instruction = "Feel free to use MCQ, short_answer, true_false, or essay question types."
@@ -215,10 +236,10 @@ Return JSON with this shape:
 
 
 def _build_local_messages(payload: QuestionGenerationRequest, base_prompt: str) -> List[Dict[str, str]]:
-    contexts = context_store.list_contexts()
+    contexts = _list_available_contexts()
     if contexts:
         context_lines = "\n".join(
-            f"- {ctx.context_id}: {ctx.filename} ({ctx.characters} chars, preview: {ctx.preview[:120]}...)"
+            f"- {ctx.get('context_id')}: {ctx.get('filename')} ({ctx.get('characters')} chars, preview: {(ctx.get('preview') or '')[:120]}...)"
             for ctx in contexts
         )
         context_note = (
@@ -414,6 +435,11 @@ def _run_local_tool_session(messages: List[Dict[str, str]]) -> str:
 
 
 def _execute_local_tool(name: Optional[str], arguments: Dict[str, Any]) -> Dict[str, Any]:
+    if mcp_configured():
+        try:
+            return call_mcp_tool(name or "", arguments or {})
+        except MCPClientError as exc:
+            raise QuestionGenerationError(f"MCP tool '{name}' failed: {exc}") from exc
     if name == "list_contexts":
         return {"contexts": _tool_list_contexts()}
     if name == "read_context":

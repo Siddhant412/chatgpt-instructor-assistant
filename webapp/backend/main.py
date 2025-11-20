@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -44,9 +46,12 @@ from .services import (
     stream_generate_questions,
 )
 from . import context_store
+from .mcp_client import MCPClientError, call_tool as call_mcp_tool, is_configured as mcp_configured
 from .canvas_service import CanvasPushError, push_question_set_to_canvas
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
+
+logger = logging.getLogger(__name__)
 
 
 def _get_paper(paper_id: int) -> Optional[Dict[str, Any]]:
@@ -249,6 +254,19 @@ async def upload_question_context(file: UploadFile = File(...)) -> QuestionConte
     try:
         ctx = await extract_context_from_upload(file.filename or "upload", contents)
         context_store.save_context(ctx)
+        if mcp_configured():
+            data_b64 = base64.b64encode(contents).decode("utf-8")
+            try:
+                await run_in_threadpool(
+                    call_mcp_tool,
+                    "upload_context",
+                    {
+                        "filename": file.filename or "upload",
+                        "data_b64": data_b64,
+                    },
+                )
+            except MCPClientError as exc:
+                logger.warning("Failed to sync context with MCP server: %s", exc)
         return ctx
     except QuestionGenerationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
