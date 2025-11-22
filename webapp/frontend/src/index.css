@@ -988,6 +988,73 @@ button.paper-delete:hover {
   color: #0f172a;
 }
 
+.chat-message-content {
+  line-height: 1.6;
+  word-wrap: break-word;
+}
+
+.chat-message-content p {
+  margin: 0 0 12px 0;
+}
+
+.chat-message-content p:last-child {
+  margin-bottom: 0;
+}
+
+.chat-message-content ul,
+.chat-message-content ol {
+  margin: 12px 0;
+  padding-left: 24px;
+}
+
+.chat-message-content li {
+  margin: 6px 0;
+  line-height: 1.5;
+}
+
+.chat-bubble.assistant .chat-message-content ul {
+  list-style-type: disc;
+}
+
+.chat-bubble.assistant .chat-message-content ol {
+  list-style-type: decimal;
+}
+
+.chat-message-content a,
+.chat-message-content .chat-link {
+  color: #2563eb;
+  text-decoration: underline;
+  word-break: break-all;
+}
+
+.chat-message-content a:hover,
+.chat-message-content .chat-link:hover {
+  color: #1d4ed8;
+}
+
+.chat-message-content strong {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.chat-message-content em {
+  font-style: italic;
+}
+
+.chat-message-content pre {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 8px 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 8px 0;
+  font-size: 0.9em;
+}
+
+.chat-message-content code {
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+  font-size: 0.9em;
+}
+
 .context-list {
   display: flex;
   flex-direction: column;
@@ -1384,5 +1451,113 @@ button.set-delete:hover {
   .paper-viewer-actions {
     flex-wrap: wrap;
     justify-content: flex-start;
+  }
+}
+
+/* Qwen Agent Page Styles */
+.qwen-agent-layout {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 24px;
+  margin-top: 24px;
+}
+
+.qwen-agent-info {
+  display: flex;
+  flex-direction: column;
+}
+
+.info-card {
+  padding: 20px;
+  border-radius: 12px;
+  background: white;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+  position: sticky;
+  top: 24px;
+}
+
+.info-card h3 {
+  margin: 0 0 16px 0;
+  font-size: 1.1rem;
+}
+
+.tool-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 16px 0;
+}
+
+.tool-list li {
+  padding: 8px 0;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.tool-list li:last-child {
+  border-bottom: none;
+}
+
+.tool-list strong {
+  color: #2563eb;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.qwen-agent-chat {
+  display: flex;
+  flex-direction: column;
+}
+
+.qwen-agent-chat .chat-window {
+  height: calc(100vh - 250px);
+  min-height: 600px;
+  display: flex;
+  flex-direction: column;
+  background: white;
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+}
+
+.empty-chat-hint {
+  padding: 40px;
+  text-align: center;
+  color: #6b7280;
+}
+
+.empty-chat-hint p {
+  margin: 0 0 16px 0;
+  font-size: 1.1rem;
+  color: #0f172a;
+}
+
+.empty-chat-hint ul {
+  text-align: left;
+  display: inline-block;
+  margin: 16px 0;
+  padding-left: 20px;
+}
+
+.empty-chat-hint li {
+  margin: 8px 0;
+}
+
+.small {
+  font-size: 0.85rem;
+}
+
+@media (max-width: 768px) {
+  .qwen-agent-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .info-card {
+    position: static;
+  }
+
+  .qwen-agent-chat .chat-window {
+    height: calc(100vh - 300px);
+    min-height: 400px;
   }
 }

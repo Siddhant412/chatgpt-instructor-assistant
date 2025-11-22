@@ -1,4 +1,4 @@
-export type Page = "landing" | "papers" | "notes" | "questions";
+export type Page = "landing" | "papers" | "notes" | "questions" | "qwen-agent";
 
 export interface Paper {
   id: number;

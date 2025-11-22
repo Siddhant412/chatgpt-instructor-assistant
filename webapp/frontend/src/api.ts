@@ -193,3 +193,16 @@ export async function pushQuestionSetToCanvas(setId: number, input: CanvasPushRe
     body: JSON.stringify(input)
   });
 }
+
+export async function qwenAgentChat(message: string, reset: boolean = false): Promise<{ response: string; model: string }> {
+  return request<{ response: string; model: string }>("/qwen-agent/chat", {
+    method: "POST",
+    body: JSON.stringify({ message, reset })
+  });
+}
+
+export async function qwenAgentReset(): Promise<{ status: string; message: string }> {
+  return request<{ status: string; message: string }>("/qwen-agent/reset", {
+    method: "POST"
+  });
+}

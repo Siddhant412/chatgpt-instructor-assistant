@@ -48,6 +48,10 @@ LITELLM_MODEL=gpt-5-mini
 LOCAL_LLM_URL=http://localhost:11434
 LOCAL_LLM_MODEL=llama3.1:8b
 
+# Qwen Agent (for autonomous tool usage)
+QWEN_MODEL=qwen2.5:7b
+QWEN_VERBOSE=false
+
 # Canvas integration
 CANVAS_API_URL=...
 CANVAS_ACCESS_TOKEN=...

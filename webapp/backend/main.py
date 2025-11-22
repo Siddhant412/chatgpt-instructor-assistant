@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -37,6 +38,8 @@ from .schemas import (
     QuestionGenerationResponse,
     QuestionSetCreate,
     QuestionSetUpdate,
+    QwenAgentChatRequest,
+    QwenAgentChatResponse,
 )
 from .services import (
     QuestionGenerationError,
@@ -48,10 +51,28 @@ from .services import (
 from . import context_store
 from .mcp_client import MCPClientError, call_tool as call_mcp_tool, is_configured as mcp_configured
 from .canvas_service import CanvasPushError, push_question_set_to_canvas
+from .qwen_agent import QwenOllamaAgent
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
 
 logger = logging.getLogger(__name__)
+
+# Global Qwen agent instance (maintains conversation history)
+_qwen_agent: Optional[QwenOllamaAgent] = None
+
+
+def get_qwen_agent() -> QwenOllamaAgent:
+    """Get or create the Qwen agent instance"""
+    global _qwen_agent
+    if _qwen_agent is None:
+        model = os.getenv("QWEN_MODEL", "qwen2.5:7b")
+        verbose = os.getenv("QWEN_VERBOSE", "false").lower() == "true"
+        try:
+            _qwen_agent = QwenOllamaAgent(model=model, verbose=verbose)
+        except Exception as e:
+            logger.error(f"Failed to initialize Qwen agent: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to initialize Qwen agent: {str(e)}")
+    return _qwen_agent
 
 
 def _get_paper(paper_id: int) -> Optional[Dict[str, Any]]:
@@ -328,6 +349,44 @@ def push_question_set_canvas(set_id: int, payload: CanvasPushRequest) -> Dict[st
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return CanvasPushResponse(**result)
+
+
+@app.post("/api/qwen-agent/chat", response_model=QwenAgentChatResponse)
+async def qwen_agent_chat(payload: QwenAgentChatRequest) -> QwenAgentChatResponse:
+    """Chat with the Qwen agent that can autonomously use tools"""
+    try:
+        agent = get_qwen_agent()
+        
+        # Reset conversation if requested
+        if payload.reset:
+            agent.reset()
+        
+        # Get response from agent
+        response = await run_in_threadpool(agent.chat, payload.message)
+        
+        return QwenAgentChatResponse(
+            response=response,
+            model=agent.model
+        )
+    except ConnectionError as exc:
+        raise HTTPException(status_code=503, detail=f"Ollama is not running: {str(exc)}")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=f"Model error: {str(exc)}")
+    except Exception as exc:
+        logger.error(f"Error in Qwen agent chat: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error: {str(exc)}")
+
+
+@app.post("/api/qwen-agent/reset")
+async def qwen_agent_reset() -> Dict[str, str]:
+    """Reset the Qwen agent conversation history"""
+    try:
+        agent = get_qwen_agent()
+        agent.reset()
+        return {"status": "ok", "message": "Conversation history reset"}
+    except Exception as exc:
+        logger.error(f"Error resetting Qwen agent: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error: {str(exc)}")
 
 
 if __name__ == "__main__":

@@ -114,3 +114,13 @@ class CanvasPushResponse(BaseModel):
     total_questions: int
     uploaded_questions: int
     published: bool
+
+
+class QwenAgentChatRequest(BaseModel):
+    message: str = Field(..., min_length=1)
+    reset: Optional[bool] = Field(default=False, description="Reset conversation history")
+
+
+class QwenAgentChatResponse(BaseModel):
+    response: str
+    model: str

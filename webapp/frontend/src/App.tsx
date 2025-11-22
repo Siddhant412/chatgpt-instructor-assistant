@@ -17,7 +17,9 @@ import {
   downloadPaper,
   chatPaper,
   generateQuestionSetWithLLM,
-  pushQuestionSetToCanvas
+  pushQuestionSetToCanvas,
+  qwenAgentChat,
+  qwenAgentReset
 } from "./api";
 import type {
   CanvasPushResult,
@@ -65,6 +67,7 @@ _The generated markdown will appear here once the LLM workspace is connected._
 `;
 
 function App() {
+  console.log("App component rendering");
   const [page, setPage] = useState<Page>("landing");
   const [focusNoteId, setFocusNoteId] = useState<number | null>(null);
 
@@ -93,6 +96,9 @@ function App() {
           <button className={page === "questions" ? "primary" : ""} onClick={() => setPage("questions")}>
             Question Sets
           </button>
+          <button className={page === "qwen-agent" ? "primary" : ""} onClick={() => setPage("qwen-agent")}>
+            Qwen Agent
+          </button>
         </nav>
       </header>
       <main>
@@ -100,6 +106,7 @@ function App() {
         {page === "papers" && <ResearchPapersPage onBack={() => setPage("landing")} onOpenNote={handleOpenNote} />}
         {page === "notes" && <NotesPage onBack={() => setPage("landing")} focusNoteId={focusNoteId} onFocusConsumed={() => setFocusNoteId(null)} />}
         {page === "questions" && <QuestionSetsPage onBack={() => setPage("landing")} />}
+        {page === "qwen-agent" && <QwenAgentPage onBack={() => setPage("landing")} />}
       </main>
     </div>
   );
@@ -1878,4 +1885,221 @@ function extractFileName(path?: string | null): string | null {
   }
   const parts = path.split("/");
   return parts.pop() || null;
+}
+
+function formatChatMessage(content: string): string {
+  if (!content) return "";
+  
+  // Split into lines for processing
+  const lines = content.split('\n');
+  const formattedLines: string[] = [];
+  let inList = false;
+  let listItems: string[] = [];
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    const originalLine = lines[i];
+    
+    // Check for list items
+    const bulletMatch = line.match(/^[-*]\s+(.+)$/);
+    const numberMatch = line.match(/^\d+\.\s+(.+)$/);
+    
+    if (bulletMatch || numberMatch) {
+      // Start or continue list
+      if (!inList) {
+        inList = true;
+        listItems = [];
+      }
+      const text = bulletMatch ? bulletMatch[1] : numberMatch![1];
+      listItems.push(formatInlineText(text));
+    } else {
+      // Close list if we were in one
+      if (inList) {
+        formattedLines.push(`<ul>${listItems.map(item => `<li>${item}</li>`).join('')}</ul>`);
+        inList = false;
+        listItems = [];
+      }
+      
+      // Process regular line
+      if (line) {
+        formattedLines.push(`<p>${formatInlineText(line)}</p>`);
+      } else if (originalLine === '') {
+        // Preserve empty lines as spacing
+        formattedLines.push('<br />');
+      }
+    }
+  }
+  
+  // Close any remaining list
+  if (inList) {
+    formattedLines.push(`<ul>${listItems.map(item => `<li>${item}</li>`).join('')}</ul>`);
+  }
+  
+  return formattedLines.join('');
+}
+
+function formatInlineText(text: string): string {
+  // Escape HTML first
+  let formatted = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  
+  // Convert markdown-style bold (**text** or __text__) - but not if inside code
+  formatted = formatted.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  formatted = formatted.replace(/__(?!_)([^_]+)__(?!_)/g, "<strong>$1</strong>");
+  
+  // Convert markdown-style italic (*text* or _text_) - but not if part of bold
+  formatted = formatted.replace(/(?<!\*)\*(?!\*)([^*]+)\*(?!\*)/g, "<em>$1</em>");
+  formatted = formatted.replace(/(?<!_)_(?!_)([^_]+)_(?!_)/g, "<em>$1</em>");
+  
+  // Convert URLs to links
+  const urlRegex = /(https?:\/\/[^\s<>"']+)/g;
+  formatted = formatted.replace(urlRegex, '<a href="$1" target="_blank" rel="noopener noreferrer" class="chat-link">$1</a>');
+  
+  // Convert arXiv IDs to links (arxiv:1234.5678 or arXiv:1234.5678)
+  formatted = formatted.replace(/(?:arxiv|arXiv):(\d+\.\d+v?\d*)/gi, '<a href="https://arxiv.org/abs/$1" target="_blank" rel="noopener noreferrer" class="chat-link">arxiv:$1</a>');
+  
+  return formatted;
+}
+
+function QwenAgentPage({ onBack }: { onBack: () => void }) {
+  const [chatHistory, setChatHistory] = useState<{ role: "user" | "assistant"; content: string; id: string }[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [model, setModel] = useState<string>("qwen2.5:7b");
+  const chatIdRef = useRef(0);
+
+  function handleChatKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      if (!chatLoading) {
+        handleChatSend();
+      }
+    }
+  }
+
+  async function handleChatSend() {
+    if (!chatInput.trim()) {
+      return;
+    }
+    const userMessage = chatInput.trim();
+    const userEntry = {
+      role: "user" as const,
+      content: userMessage,
+      id: `qwen-${chatIdRef.current++}`
+    };
+    setChatHistory((prev) => [...prev, userEntry]);
+    setChatInput("");
+    setChatLoading(true);
+    setError(null);
+    setStatus("Agent is thinking and using tools...");
+    try {
+      const result = await qwenAgentChat(userMessage, false);
+      const assistantEntry = {
+        role: "assistant" as const,
+        content: result.response,
+        id: `qwen-${chatIdRef.current++}`
+      };
+      setChatHistory((prev) => [...prev, assistantEntry]);
+      setModel(result.model);
+      setStatus(null);
+    } catch (err) {
+      setError((err as Error).message);
+      setStatus(null);
+    } finally {
+      setChatLoading(false);
+    }
+  }
+
+  async function handleReset() {
+    if (!window.confirm("Reset conversation history? This will clear all messages.")) {
+      return;
+    }
+    try {
+      await qwenAgentReset();
+      setChatHistory([]);
+      setStatus("Conversation reset");
+      setTimeout(() => setStatus(null), 2000);
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  return (
+    <section className="page qwen-agent">
+      <div className="page-head">
+        <div>
+          <h2>Qwen Agent</h2>
+          <p className="muted">AI agent powered by Qwen 2.5 that can autonomously search the web, find papers, download videos, and more.</p>
+        </div>
+        <div className="page-actions">
+          <button onClick={onBack}>Back</button>
+          <button onClick={handleReset} disabled={chatLoading || chatHistory.length === 0}>
+            Reset
+          </button>
+        </div>
+      </div>
+      {error && <p className="error">{error}</p>}
+      {status && <p className="status">{status}</p>}
+      <div className="qwen-agent-layout">
+        <div className="qwen-agent-info">
+          <div className="info-card">
+            <h3>Available Tools</h3>
+            <ul className="tool-list">
+              <li><strong>Web Search</strong> - Search the web using DuckDuckGo</li>
+              <li><strong>Get News</strong> - Get latest news from Google News</li>
+              <li><strong>arXiv Search</strong> - Find research papers</li>
+              <li><strong>arXiv Download</strong> - Download PDF papers</li>
+              <li><strong>PDF Summary</strong> - Extract and summarize PDFs</li>
+              <li><strong>YouTube Search</strong> - Find videos</li>
+              <li><strong>YouTube Download</strong> - Download videos</li>
+            </ul>
+            <p className="muted small">The agent automatically decides which tools to use based on your questions.</p>
+            {model && <p className="muted small">Model: {model}</p>}
+          </div>
+        </div>
+        <div className="qwen-agent-chat">
+          <div className="chat-window">
+            <div className="chat-log">
+              {chatHistory.length === 0 && (
+                <div className="empty-chat-hint">
+                  <p>Ask me anything! I can:</p>
+                  <ul>
+                    <li>Search the web for information</li>
+                    <li>Find and download research papers from arXiv</li>
+                    <li>Search and download YouTube videos</li>
+                    <li>Get the latest news on any topic</li>
+                    <li>Summarize PDF documents</li>
+                  </ul>
+                  <p className="muted">Example: "Search for papers on transformer architectures and download the first one"</p>
+                </div>
+              )}
+              {chatHistory.map((msg) => (
+                <div key={msg.id} className={`chat-bubble ${msg.role}`}>
+                  <div className="chat-message-content" dangerouslySetInnerHTML={{ __html: formatChatMessage(msg.content) }} />
+                </div>
+              ))}
+            </div>
+            <div className="chat-input-bar">
+              <textarea
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={handleChatKeyDown}
+                placeholder="Ask the agent to search, download, or find information..."
+                rows={3}
+              />
+              <div className="chat-bar-actions">
+                <button className="primary" onClick={handleChatSend} disabled={chatLoading || !chatInput.trim()}>
+                  {chatLoading ? "Processing..." : "Send"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
 }
