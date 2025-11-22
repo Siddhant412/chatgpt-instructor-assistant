@@ -1178,6 +1178,37 @@ button.paper-delete:hover {
   font-size: 0.9rem;
 }
 
+.insert-preview-card {
+  margin: 16px 0;
+  padding: 16px;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  background: #fdfdfd;
+  box-shadow: 0 4px 20px rgba(15, 23, 42, 0.08);
+}
+
+.insert-preview-card h4 {
+  margin: 0 0 4px;
+}
+
+.preview-question-list {
+  margin: 12px 0;
+  padding-left: 20px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.preview-question-list li + li {
+  margin-top: 8px;
+}
+
+.preview-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
 .upload-left {
   display: flex;
   flex-direction: column;
@@ -1335,6 +1366,37 @@ button.set-delete:hover {
   background: #0f172a;
   color: #f8fafc;
   resize: vertical;
+}
+
+.markdown-preview {
+  margin-top: 12px;
+  min-height: 500px;
+  padding: 16px;
+  border-radius: 12px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  overflow-y: auto;
+}
+
+.markdown-preview-content h1,
+.markdown-preview-content h2,
+.markdown-preview-content h3 {
+  margin: 12px 0 6px;
+}
+
+.markdown-preview-content p {
+  margin: 8px 0;
+}
+
+.markdown-preview-content ul {
+  padding-left: 20px;
+  margin: 8px 0;
+}
+
+.markdown-mode-toggle {
+  display: inline-flex;
+  gap: 8px;
+  margin-right: 12px;
 }
 
 .manual-head {

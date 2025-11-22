@@ -11,6 +11,13 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
 
+from server.question_sets import (
+    create_question_set,
+    delete_question_set,
+    get_question_set,
+    list_question_sets,
+    update_question_set,
+)
 from webapp.backend import context_store, services
 from webapp.backend.schemas import QuestionGenerationRequest
 from webapp.backend.services import QuestionGenerationError
@@ -46,6 +53,15 @@ def _context_payload(include_text: bool = False) -> List[Dict[str, Any]]:
             data["text"] = ctx.text
         payload.append(data)
     return payload
+
+
+def _question_set_payload(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        "question_set": payload.get("question_set"),
+        "questions": payload.get("questions"),
+    }
 
 
 @mcp.tool("upload_context")
@@ -173,6 +189,61 @@ def generate_question_set(
     }
     msg = f"Generated {len(structured['questions'])} question(s)."
     return _result(msg, structured)
+
+
+@mcp.tool("extract_questions_and_answers")
+def extract_questions_and_answers() -> CallToolResult:
+    logger.info("MCP tool called: extract_questions_and_answers (unsupported)")
+    return _result(
+        "extract_questions_and_answers is not available. Use list_contexts/read_context and then return your final JSON.",
+        {"error": "unsupported_tool"},
+    )
+
+
+@mcp.tool("list_question_sets")
+def list_question_sets_tool() -> CallToolResult:
+    rows = list_question_sets()
+    return _result(f"Found {len(rows)} question set(s).", {"question_sets": rows})
+
+
+@mcp.tool("get_question_set")
+def get_question_set_tool(set_id: int) -> CallToolResult:
+    payload = get_question_set(int(set_id))
+    if not payload:
+        return _result(f"Question set {set_id} not found.", {"error": "not_found"})
+    return _result("Loaded question set.", _question_set_payload(payload))
+
+
+@mcp.tool("save_question_set")
+def save_question_set_tool(prompt: str, items: List[Dict[str, Any]]) -> CallToolResult:
+    if not items:
+        return _result("Provide at least one question.", {"error": "no_questions"})
+    try:
+        payload = create_question_set(prompt, items)
+    except ValueError as exc:
+        return _result(str(exc), {"error": "invalid_request"})
+    structured = _question_set_payload(payload)
+    count = len(structured.get("questions") or [])
+    return _result(f"Saved {count} question(s).", structured)
+
+
+@mcp.tool("update_question_set")
+def update_question_set_tool(set_id: int, items: List[Dict[str, Any]], prompt: Optional[str] = None) -> CallToolResult:
+    if not items:
+        return _result("Provide at least one question.", {"error": "no_questions"})
+    try:
+        payload = update_question_set(int(set_id), prompt, items)
+    except ValueError as exc:
+        return _result(str(exc), {"error": "invalid_request"})
+    structured = _question_set_payload(payload)
+    count = len(structured.get("questions") or [])
+    return _result(f"Updated {count} question(s).", structured)
+
+
+@mcp.tool("delete_question_set")
+def delete_question_set_tool(set_id: int) -> CallToolResult:
+    delete_question_set(int(set_id))
+    return _result(f"Deleted question set {set_id}.", {"set_id": set_id})
 
 
 def run_server() -> None:

@@ -17,7 +17,6 @@ from pypdf import PdfReader
 
 from server.db import get_conn
 from server.tools.canvas_export import render_canvas_markdown
-from . import context_store
 from .mcp_client import MCPClientError, call_tool as call_mcp_tool, is_configured as mcp_configured
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
@@ -28,6 +27,7 @@ from .schemas import (
     QuestionContextUploadResponse,
     QuestionGenerationRequest,
     QuestionGenerationResponse,
+    QuestionInsertionRequest,
 )
 
 # DEFAULT_MODEL = os.getenv("LITELLM_MODEL", "gpt-4o-mini")
@@ -45,6 +45,8 @@ DEFAULT_PROVIDER = (os.getenv("LLM_PROVIDER") or "openai").strip().lower()
 LOCAL_LLM_URL = (os.getenv("LOCAL_LLM_URL") or "http://localhost:11434").rstrip("/")
 LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "llama3.1:8b")
 LOCAL_LLM_TIMEOUT = int(os.getenv("LOCAL_LLM_TIMEOUT", "60"))
+LOCAL_TOOL_LIMIT = int(os.getenv("LOCAL_TOOL_STEPS", "12"))
+ALLOWED_LOCAL_TOOLS = {"list_contexts", "read_context"}
 TYPE_PATTERNS = {
     "mcq": r"mcqs?|multiple\s+choice(?:\s+questions?)?",
     "short_answer": r"short[-\s]?answer(?:\s+questions?)?",
@@ -147,23 +149,16 @@ async def stream_generate_questions(payload: QuestionGenerationRequest) -> Async
 
 
 def _list_available_contexts() -> List[Dict[str, Any]]:
-    if mcp_configured():
-        try:
-            payload = call_mcp_tool("list_contexts", {})
-            contexts = payload.get("contexts") if isinstance(payload, dict) else None
-            if isinstance(contexts, list):
-                return contexts
-        except MCPClientError as exc:
-            logger.warning("Failed to list contexts via MCP: %s", exc)
-    return [
-        {
-            "context_id": ctx.context_id,
-            "filename": ctx.filename,
-            "characters": ctx.characters,
-            "preview": ctx.preview,
-        }
-        for ctx in context_store.list_contexts()
-    ]
+    if not mcp_configured():
+        raise QuestionGenerationError("LOCAL_MCP_SERVER_URL must be configured to list contexts.")
+    try:
+        payload = call_mcp_tool("list_contexts", {})
+    except MCPClientError as exc:
+        raise QuestionGenerationError(f"Failed to list contexts via MCP: {exc}") from exc
+    contexts = payload.get("contexts") if isinstance(payload, dict) else None
+    if isinstance(contexts, list):
+        return contexts
+    return []
 
 
 def _build_messages(payload: QuestionGenerationRequest, provider: str = "openai") -> List[Dict[str, str]]:
@@ -264,6 +259,11 @@ Tools:
 - read_context: arguments {context_id (string, required), start (int, optional), length (int <= 4000, optional)}. Returns a text excerpt.
 
 When you have enough information, produce the final JSON with the required "questions" array and use {"action":"final", "content": ...}.
+
+Important rules (violating any of these requires you to immediately stop and output {"action":"final","content":{"error":"CONSTRAINT_VIOLATION"}}):
+- You must NEVER call any tool other than list_contexts or read_context. Do not invent new tool names under any circumstance.
+- Every read_context call must include a valid context_id you previously saw in list_contexts. Never send read_context without context_id or with an unknown ID.
+- If a tool call fails or you realize you cannot comply with these instructions, stop immediately and return the CONSTRAINT_VIOLATION error above.
 """
 
     system_prompt = (
@@ -390,12 +390,16 @@ def _call_local_llm(messages: List[Dict[str, str]]) -> str:
 
 def _run_local_tool_session(messages: List[Dict[str, str]]) -> str:
     conversation = [dict(msg) for msg in messages]
-    for step in range(16):
+    for step in range(LOCAL_TOOL_LIMIT):
         reply = _call_local_llm(conversation)
         cleaned = reply.strip()
         data = _try_parse_json(cleaned)
         if isinstance(data, dict) and data.get("action") == "call_tool":
             tool_name = data.get("tool")
+            if tool_name not in ALLOWED_LOCAL_TOOLS:
+                raise QuestionGenerationError(
+                    f"Local LLM attempted unsupported tool '{tool_name}'. Only list_contexts/read_context are allowed."
+                )
             arguments = data.get("arguments") or {}
             logger.info("[local-llm] tool=%s args=%s", tool_name, arguments)
             tool_output = _execute_local_tool(tool_name, arguments)
@@ -431,61 +435,16 @@ def _run_local_tool_session(messages: List[Dict[str, str]]) -> str:
             }
         )
         continue
-    raise QuestionGenerationError("Local LLM exceeded tool call limit.")
+    raise QuestionGenerationError("Local LLM exceeded tool call limit before returning a valid final response.")
 
 
 def _execute_local_tool(name: Optional[str], arguments: Dict[str, Any]) -> Dict[str, Any]:
-    if mcp_configured():
-        try:
-            return call_mcp_tool(name or "", arguments or {})
-        except MCPClientError as exc:
-            raise QuestionGenerationError(f"MCP tool '{name}' failed: {exc}") from exc
-    if name == "list_contexts":
-        return {"contexts": _tool_list_contexts()}
-    if name == "read_context":
-        return _tool_read_context(arguments)
-    logger.warning("[local-llm] unknown tool requested: %s", name)
-    return {"error": f"Unknown tool '{name}'."}
-
-
-def _tool_list_contexts() -> List[Dict[str, Any]]:
-    contexts = context_store.list_contexts()
-    return [
-        {
-            "context_id": ctx.context_id,
-            "filename": ctx.filename,
-            "characters": ctx.characters,
-            "preview": ctx.preview,
-        }
-        for ctx in contexts
-    ]
-
-
-def _tool_read_context(arguments: Dict[str, Any]) -> Dict[str, Any]:
-    context_id = (arguments.get("context_id") or "").strip()
-    if not context_id:
-        return {"error": "context_id is required."}
-    ctx = context_store.get_context(context_id)
-    if not ctx:
-        return {"error": f"context '{context_id}' not found."}
+    if not mcp_configured():
+        raise QuestionGenerationError("LOCAL_MCP_SERVER_URL must be configured to call tools.")
     try:
-        start = max(0, int(arguments.get("start", 0)))
-    except (TypeError, ValueError):
-        start = 0
-    try:
-        length = int(arguments.get("length", 4000))
-    except (TypeError, ValueError):
-        length = 4000
-    length = max(500, min(length, 6000))
-    text = ctx.text or ""
-    snippet = text[start : start + length]
-    return {
-        "context_id": context_id,
-        "start": start,
-        "length": len(snippet),
-        "has_more": start + len(snippet) < len(text),
-        "content": snippet,
-    }
+        return call_mcp_tool(name or "", arguments or {})
+    except MCPClientError as exc:
+        raise QuestionGenerationError(f"MCP tool '{name}' failed: {exc}") from exc
 
 
 def _try_parse_json(raw: str) -> Optional[Any]:
@@ -500,6 +459,69 @@ def _resolve_provider(payload: QuestionGenerationRequest) -> str:
     if provider not in {"openai", "local"}:
         provider = DEFAULT_PROVIDER or "openai"
     return provider
+
+
+def generate_insertion_preview(
+    question_set_payload: Dict[str, Any],
+    payload: QuestionInsertionRequest,
+) -> Tuple[List[Question], List[Question], int]:
+    existing = question_set_payload.get("questions") or []
+    question_models = [_question_from_dict(item) for item in existing]
+    anchor_index, anchor_label = _resolve_insert_index(question_models, payload.anchor_question_id, payload.position)
+    anchor_sentence = _build_anchor_instruction(anchor_label, payload.position)
+    user_instruction = payload.instructions.strip()
+    combined_instruction = f"{user_instruction}\n\n{anchor_sentence}\nReturn only the new questions that should be inserted at that location."
+    request = QuestionGenerationRequest(
+        instructions=combined_instruction,
+        context=payload.context,
+        question_count=payload.question_count,
+        question_types=payload.question_types,
+        provider=payload.provider,
+    )
+    result = generate_questions(request)
+    preview_questions = result.questions
+    merged_questions = (
+        question_models[:anchor_index] + preview_questions + question_models[anchor_index:]
+    )
+    return preview_questions, merged_questions, anchor_index
+
+
+def _question_from_dict(data: Dict[str, Any]) -> Question:
+    try:
+        return Question.model_validate(data)
+    except Exception:
+        return Question(
+            id=data.get("id"),
+            kind=(data.get("kind") or "short_answer"),
+            text=data.get("text") or "Untitled question",
+            options=data.get("options"),
+            answer=data.get("answer"),
+            explanation=data.get("explanation"),
+            reference=data.get("reference"),
+        )
+
+
+def _resolve_insert_index(questions: List[Question], anchor_id: Optional[int], position: str) -> Tuple[int, str]:
+    if not questions:
+        return 0, "the beginning of the question set"
+    if anchor_id is None:
+        if position == "before":
+            return 0, f"before question '{questions[0].text[:80]}'"
+        return len(questions), f"after question '{questions[-1].text[:80]}'"
+    for idx, question in enumerate(questions):
+        if question.id == anchor_id:
+            if position == "before":
+                return idx, f"before question '{question.text[:80]}'"
+            return idx + 1, f"after question '{question.text[:80]}'"
+    # Fallback to end if anchor not found
+    return len(questions), f"after question '{questions[-1].text[:80]}'"
+
+
+def _build_anchor_instruction(anchor_phrase: str, position: str) -> str:
+    return (
+        f"Insert the new questions {anchor_phrase}. "
+        "Do not repeat existing questions; output only the additional ones."
+    )
 
 
 def summarize_paper_chat(paper_id: int, messages: List[PaperChatMessage]) -> Dict[str, Any]:

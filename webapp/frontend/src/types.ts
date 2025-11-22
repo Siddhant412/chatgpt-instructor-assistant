@@ -70,6 +70,23 @@ export type QuestionStreamEvent =
   | { type: "complete"; questions: Question[]; markdown: string; raw_response?: string }
   | { type: "error"; message: string };
 
+export interface QuestionInsertionPayload {
+  instructions: string;
+  context?: string;
+  question_count?: number;
+  question_types?: string[];
+  provider?: string;
+  anchor_question_id?: number;
+  position?: "before" | "after";
+}
+
+export interface QuestionInsertionPreview {
+  question_set: QuestionSetMeta;
+  preview_questions: Question[];
+  merged_questions: Question[];
+  insert_index: number;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;

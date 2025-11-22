@@ -1,4 +1,5 @@
 import { ChangeEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import MarkdownRenderer from "./components/MarkdownRenderer";
 import {
   API_BASE,
   createNote,
@@ -17,7 +18,8 @@ import {
   downloadPaper,
   chatPaper,
   generateQuestionSetWithLLM,
-  pushQuestionSetToCanvas
+  pushQuestionSetToCanvas,
+  previewQuestionInsertion
 } from "./api";
 import type {
   CanvasPushResult,
@@ -28,6 +30,8 @@ import type {
   Question,
   QuestionContext,
   QuestionGenerationPayload,
+  QuestionInsertionPayload,
+  QuestionInsertionPreview,
   QuestionSetMeta
 } from "./types";
 
@@ -57,12 +61,27 @@ const emptyQuestion = (): QuestionForm => ({
   optionsDraft: ""
 });
 
+const mapQuestionToForm = (question: Question): QuestionForm => ({
+  ...question,
+  options: question.options || undefined,
+  optionsDraft: (question.options || []).join("\n")
+});
+
+const mapQuestionList = (items: Question[]): QuestionForm[] => {
+  if (!items.length) {
+    return [emptyQuestion()];
+  }
+  return items.map(mapQuestionToForm);
+};
+
 const MARKDOWN_PLACEHOLDER = `<!-- Prompt: Describe your assessment goals -->
 
 ### Question Set Preview
 
 _The generated markdown will appear here once the LLM workspace is connected._
 `;
+
+type MarkdownViewMode = "edit" | "preview";
 
 function App() {
   const [page, setPage] = useState<Page>("landing");
@@ -920,6 +939,97 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
+type ParsedInsertionIntent = {
+  anchorQuestionId?: number;
+  position: "before" | "after";
+  questionCount?: number;
+  summary: string;
+};
+
+function detectInsertionIntent(text: string, questions: QuestionForm[]): ParsedInsertionIntent | null {
+  const lower = text.toLowerCase();
+  if (!/(insert|add|append|include)/.test(lower)) {
+    return null;
+  }
+  let position: "before" | "after" = "after";
+  let anchorNumber: number | undefined;
+  let summary = "at the end of the question set";
+
+  const betweenMatch = lower.match(/between\s+question\s+(\d+)\s+and\s+(\d+)/);
+  if (betweenMatch) {
+    anchorNumber = Number(betweenMatch[1]);
+    summary = `between Question ${betweenMatch[1]} and Question ${betweenMatch[2]}`;
+  } else {
+    const beforeMatch = lower.match(/before\s+question\s+(\d+)/);
+    const afterMatch = lower.match(/after\s+question\s+(\d+)/);
+    if (beforeMatch) {
+      anchorNumber = Number(beforeMatch[1]);
+      position = "before";
+      summary = `before Question ${beforeMatch[1]}`;
+    } else if (afterMatch) {
+      anchorNumber = Number(afterMatch[1]);
+      position = "after";
+      summary = `after Question ${afterMatch[1]}`;
+    } else if (/beginning|start/.test(lower)) {
+      position = "before";
+      summary = "at the beginning of the set";
+    } else if (/end|last/.test(lower)) {
+      position = "after";
+      summary = "at the end of the set";
+    } else {
+      const firstNumber = lower.match(/question\s+(\d+)/);
+      if (firstNumber) {
+        anchorNumber = Number(firstNumber[1]);
+        summary = `after Question ${firstNumber[1]}`;
+      }
+    }
+  }
+
+  let anchorQuestionId: number | undefined;
+  if (anchorNumber && !Number.isNaN(anchorNumber)) {
+    const idx = anchorNumber - 1;
+    if (idx >= 0 && idx < questions.length) {
+      anchorQuestionId = questions[idx].id ?? undefined;
+      const label = describeQuestionLabel(anchorNumber, questions[idx].text);
+      summary = position === "before" ? `before ${label}` : `after ${label}`;
+    }
+  }
+
+  const countMatch = text.match(/\b(?:insert|add)\s+(\d+)\s+(?:new\s+)?questions?/i);
+  const questionCount = countMatch ? Number(countMatch[1]) : undefined;
+
+  return {
+    anchorQuestionId,
+    position,
+    questionCount: questionCount && questionCount > 0 ? questionCount : undefined,
+    summary
+  };
+}
+
+function describeQuestionLabel(index: number, text?: string): string {
+  if (!text) {
+    return `Question ${index}`;
+  }
+  const trimmed = text.length > 80 ? `${text.slice(0, 77).trim()}…` : text;
+  return `Question ${index} (“${trimmed}”)`;
+}
+
+function describeInsertIndex(insertIndex: number, questions: QuestionForm[]): string {
+  const total = questions.length;
+  if (!total) {
+    return "at the beginning of the question set";
+  }
+  if (insertIndex <= 0) {
+    return `before ${describeQuestionLabel(1, questions[0].text)}`;
+  }
+  if (insertIndex >= total) {
+    return `after ${describeQuestionLabel(total, questions[total - 1].text)}`;
+  }
+  const beforeLabel = describeQuestionLabel(insertIndex, questions[insertIndex - 1].text);
+  const afterLabel = describeQuestionLabel(insertIndex + 1, questions[insertIndex].text);
+  return `between ${beforeLabel} and ${afterLabel}`;
+}
+
 function QuestionSetsPage({ onBack }: { onBack: () => void }) {
   const [sets, setSets] = useState<QuestionSetMeta[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -932,6 +1042,7 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
   const [markdownDraft, setMarkdownDraft] = useState<string>(MARKDOWN_PLACEHOLDER);
   const [markdownStatus, setMarkdownStatus] = useState<string | null>(null);
   const [selectedFileName, setSelectedFileName] = useState<string>("question-set.md");
+  const [markdownMode, setMarkdownMode] = useState<MarkdownViewMode>("edit");
   const [chatInput, setChatInput] = useState("");
   const [chatHistory, setChatHistory] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
   const [chatLoading, setChatLoading] = useState(false);
@@ -948,6 +1059,8 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
   const [canvasStatus, setCanvasStatus] = useState<string | null>(null);
   const [canvasResult, setCanvasResult] = useState<CanvasPushResult | null>(null);
   const [canvasLoading, setCanvasLoading] = useState(false);
+  const [insertionPreview, setInsertionPreview] = useState<InsertionPreviewState | null>(null);
+  const [insertionLoading, setInsertionLoading] = useState(false);
   const [llmProvider, setLlmProvider] = useState<"openai" | "local">(() => {
     if (typeof window === "undefined") {
       return "openai";
@@ -993,20 +1106,14 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
       setMode("upload");
       setSelectedId(id);
       setPrompt(data.question_set.prompt || "");
-      setQuestions(
-        data.questions.length
-          ? data.questions.map((q) => ({
-              ...q,
-              options: q.options || undefined,
-              optionsDraft: (q.options || []).join("\n")
-            }))
-          : [emptyQuestion()]
-      );
+      setQuestions(mapQuestionList(data.questions));
       syncMarkdownFromQuestions(data.question_set.prompt || "", data.questions, data.question_set.canvas_md_path, id);
       setStatus(null);
       setCanvasPanelOpen(false);
       setCanvasStatus(null);
       setCanvasResult(null);
+      setInsertionPreview(null);
+      setInsertionLoading(false);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -1028,6 +1135,8 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
     setCanvasResult(null);
     setCanvasLoading(false);
     setCanvasForm({ title: "", courseId: "", timeLimit: "0", publish: false });
+    setInsertionPreview(null);
+    setInsertionLoading(false);
   }
 
   function handleQuestionChange(index: number, updates: Partial<QuestionForm>) {
@@ -1214,9 +1323,22 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
       return;
     }
     try {
-      await createQuestionSet({ prompt: promptValue, questions: generated });
+      let payload;
+      if (selectedId) {
+        payload = await updateQuestionSet(selectedId, { prompt: promptValue, questions: generated });
+        setStatus("Updated existing question set.");
+      } else {
+        payload = await createQuestionSet({ prompt: promptValue, questions: generated });
+        setStatus("Draft saved to LLM library.");
+      }
+      if (payload) {
+        const setInfo = payload.question_set;
+        setSelectedId(setInfo.id);
+        setPrompt(setInfo.prompt || promptValue);
+        setQuestions(mapQuestionList(payload.questions));
+        syncMarkdownFromQuestions(setInfo.prompt || promptValue, payload.questions, setInfo.canvas_md_path, setInfo.id);
+      }
       await refreshSets();
-      setStatus("Draft saved to LLM library.");
     } catch (err) {
       setError((err as Error).message);
     }
@@ -1267,6 +1389,51 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
     const instructions = chatInput.trim();
     const selectedTexts = contexts.filter((ctx) => selectedContextIds.includes(ctx.context_id)).map((ctx) => ctx.text);
     const combinedContext = selectedTexts.filter(Boolean).join("\n\n");
+    const insertionIntent = detectInsertionIntent(instructions, questions);
+    if (insertionIntent) {
+      if (!selectedId) {
+        setError("Select a saved question set before inserting new questions.");
+        return;
+      }
+      setChatLoading(true);
+      setError(null);
+      setStatus(null);
+      try {
+        const payload: QuestionInsertionPayload = {
+          instructions,
+          context: combinedContext || undefined,
+          provider: llmProvider,
+          question_count: insertionIntent.questionCount,
+          anchor_question_id: insertionIntent.anchorQuestionId,
+          position: insertionIntent.position
+        };
+        const preview = await previewQuestionInsertion(selectedId, payload);
+        const computedSummary = describeInsertIndex(preview.insert_index, questions);
+        setInsertionPreview({
+          ...preview,
+          instructions,
+          summary: computedSummary,
+          provider: llmProvider
+        });
+        setChatHistory((prev) => [
+          ...prev,
+          { role: "user", content: instructions },
+          {
+            role: "assistant",
+            content: `Preview ready: ${preview.preview_questions.length} question(s) prepared ${insertionIntent.summary}. Review below and accept or discard.`
+          }
+        ]);
+        setChatInput("");
+      } catch (err) {
+        setError((err as Error).message);
+      } finally {
+        setChatLoading(false);
+      }
+      return;
+    }
+    if (insertionPreview) {
+      setInsertionPreview(null);
+    }
     setChatLoading(true);
     setError(null);
     setStatus(null);
@@ -1280,15 +1447,7 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
       try {
         const result = await generateQuestionSetWithLLM(payload);
         setPrompt(instructions);
-        setQuestions(
-          result.questions.length
-            ? result.questions.map((q) => ({
-                ...q,
-                options: q.options || undefined,
-                optionsDraft: (q.options || []).join("\n")
-              }))
-            : [emptyQuestion()]
-        );
+        setQuestions(mapQuestionList(result.questions));
         setMarkdownDraft(result.markdown || MARKDOWN_PLACEHOLDER);
         setSelectedFileName("chatbot-question-set.md");
         setMarkdownStatus("Draft updated from local model.");
@@ -1344,15 +1503,7 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
           } else if (event.type === "complete") {
             completionRef.current = event.questions;
             setPrompt(instructions);
-            setQuestions(
-              event.questions.length
-                ? event.questions.map((q) => ({
-                    ...q,
-                    options: q.options || undefined,
-                    optionsDraft: (q.options || []).join("\n")
-                  }))
-                : [emptyQuestion()]
-            );
+            setQuestions(mapQuestionList(event.questions));
             setMarkdownDraft(event.markdown || MARKDOWN_PLACEHOLDER);
             setSelectedFileName("chatbot-question-set.md");
             setMarkdownStatus("Draft updated from chatbot.");
@@ -1391,6 +1542,41 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
     }
   }
 
+  async function handleAcceptInsertion() {
+    if (!insertionPreview || !selectedId) {
+      return;
+    }
+    setInsertionLoading(true);
+    setError(null);
+    try {
+      const result = await updateQuestionSet(selectedId, { prompt, questions: insertionPreview.merged_questions });
+      setPrompt(result.question_set.prompt || "");
+      setQuestions(mapQuestionList(result.questions));
+      syncMarkdownFromQuestions(
+        result.question_set.prompt || "",
+        result.questions,
+        result.question_set.canvas_md_path,
+        result.question_set.id
+      );
+      setInsertionPreview(null);
+      setStatus("Inserted new questions into the set.");
+      setChatHistory((prev) => [
+        ...prev,
+        { role: "assistant", content: "Accepted the new questions. Markdown has been refreshed." }
+      ]);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setInsertionLoading(false);
+    }
+  }
+
+  function handleDiscardInsertion() {
+    setInsertionPreview(null);
+    setInsertionLoading(false);
+    setStatus("Discarded the pending insertion.");
+  }
+
 
   const markdownPane = (
     <div className="markdown-panel">
@@ -1400,6 +1586,14 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
           <p className="muted">{selectedFileName ? `Editing ${selectedFileName}` : "No markdown loaded yet."}</p>
         </div>
         <div className="markdown-actions">
+          <div className="markdown-mode-toggle">
+            <button className={markdownMode === "edit" ? "primary" : ""} onClick={() => setMarkdownMode("edit")}>
+              Edit
+            </button>
+            <button className={markdownMode === "preview" ? "primary" : ""} onClick={() => setMarkdownMode("preview")}>
+              Preview
+            </button>
+          </div>
           <button className="primary" onClick={handleDownloadMarkdown}>
             Save .md
           </button>
@@ -1408,7 +1602,21 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
           </button>
         </div>
       </div>
-      <textarea className="markdown-textarea" value={markdownDraft} onChange={(e) => { setMarkdownDraft(e.target.value); setMarkdownStatus(null); }} rows={20} />
+      {markdownMode === "edit" ? (
+        <textarea
+          className="markdown-textarea"
+          value={markdownDraft}
+          onChange={(e) => {
+            setMarkdownDraft(e.target.value);
+            setMarkdownStatus(null);
+          }}
+          rows={20}
+        />
+      ) : (
+        <div className="markdown-preview">
+          <MarkdownRenderer markdown={markdownDraft} />
+        </div>
+      )}
       {canvasPanelOpen && (
         <div className="canvas-panel">
           <div className="canvas-grid">
@@ -1563,6 +1771,34 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
                 })}
                 {!contexts.length && <p className="muted">No documents uploaded yet.</p>}
               </div>
+            {insertionPreview && (
+              <div className="insert-preview-card">
+              <div className="insert-preview-head">
+                <div>
+                  <h4>Pending insertion</h4>
+                  <p className="muted">
+                    {`The assistant prepared ${insertionPreview.preview_questions.length} question(s) to be inserted ${insertionPreview.summary}.`}
+                  </p>
+                </div>
+              </div>
+                <ol className="preview-question-list">
+                  {insertionPreview.preview_questions.map((q, idx) => (
+                    <li key={idx}>
+                      <strong>{q.text}</strong>
+                      <span className="muted"> · {q.kind || "short_answer"}</span>
+                    </li>
+                  ))}
+                </ol>
+                <div className="preview-actions">
+                  <button className="primary" onClick={handleAcceptInsertion} disabled={insertionLoading}>
+                    {insertionLoading ? "Applying…" : "Accept & Update"}
+                  </button>
+                  <button onClick={handleDiscardInsertion} disabled={insertionLoading}>
+                    Discard
+                  </button>
+                </div>
+              </div>
+            )}
             <div className="chat-window">
               <div className="chat-log">
                 {chatHistory.length === 0 && <p className="muted">No conversations yet. Ask for a question set to begin.</p>}
@@ -1879,3 +2115,8 @@ function extractFileName(path?: string | null): string | null {
   const parts = path.split("/");
   return parts.pop() || null;
 }
+type InsertionPreviewState = QuestionInsertionPreview & {
+  instructions: string;
+  summary: string;
+  provider: "openai" | "local";
+};

@@ -19,12 +19,43 @@ class NoteUpdate(BaseModel):
 
 
 class Question(BaseModel):
+    id: Optional[int] = None
     kind: str = Field(default="short_answer", min_length=1)
     text: str = Field(..., min_length=1)
     options: Optional[List[str]] = None
     answer: Optional[str] = None
     explanation: Optional[str] = None
     reference: Optional[str] = None
+
+class QuestionSetMeta(BaseModel):
+    id: int
+    prompt: Optional[str] = None
+    created_at: Optional[str] = None
+    count: Optional[int] = None
+    canvas_md_path: Optional[str] = None
+
+
+class QuestionSetPayload(BaseModel):
+    question_set: QuestionSetMeta
+    questions: List[Question]
+
+
+class QuestionInsertionRequest(BaseModel):
+    instructions: str = Field(..., min_length=5)
+    context: Optional[str] = None
+    question_count: Optional[int] = Field(default=None, ge=1, le=50)
+    question_types: Optional[List[str]] = None
+    provider: Optional[str] = None
+    anchor_question_id: Optional[int] = Field(default=None, description="Existing question ID to anchor around.")
+    position: Literal["before", "after"] = Field(default="after")
+
+
+class QuestionInsertionPreviewResponse(BaseModel):
+    question_set: QuestionSetMeta
+    preview_questions: List[Question]
+    merged_questions: List[Question]
+    insert_index: int
+
 
 
 class QuestionSetCreate(BaseModel):

@@ -7,6 +7,8 @@ import {
   QuestionContext,
   QuestionGenerationPayload,
   QuestionGenerationResult,
+  QuestionInsertionPayload,
+  QuestionInsertionPreview,
   QuestionSetMeta,
   QuestionSetPayload,
   QuestionStreamEvent,
@@ -189,6 +191,16 @@ export async function chatPaper(paperId: number, messages: ChatMessage[]): Promi
 
 export async function pushQuestionSetToCanvas(setId: number, input: CanvasPushRequest): Promise<CanvasPushResult> {
   return request<CanvasPushResult>(`/question-sets/${setId}/canvas`, {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function previewQuestionInsertion(
+  setId: number,
+  input: QuestionInsertionPayload
+): Promise<QuestionInsertionPreview> {
+  return request<QuestionInsertionPreview>(`/question-sets/${setId}/preview/insert`, {
     method: "POST",
     body: JSON.stringify(input)
   });

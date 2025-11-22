@@ -35,18 +35,24 @@ from .schemas import (
     QuestionContextUploadResponse,
     QuestionGenerationRequest,
     QuestionGenerationResponse,
+    QuestionInsertionPreviewResponse,
+    QuestionInsertionRequest,
     QuestionSetCreate,
     QuestionSetUpdate,
 )
 from .services import (
     QuestionGenerationError,
-    extract_context_from_upload,
+    generate_insertion_preview,
     generate_questions,
     summarize_paper_chat,
     stream_generate_questions,
 )
-from . import context_store
-from .mcp_client import MCPClientError, call_tool as call_mcp_tool, is_configured as mcp_configured
+from .mcp_client import (
+    MCPClientError,
+    call_tool as call_mcp_tool,
+    call_tool_async as call_mcp_tool_async,
+    is_configured as mcp_configured,
+)
 from .canvas_service import CanvasPushError, push_question_set_to_canvas
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
@@ -252,24 +258,46 @@ async def upload_question_context(file: UploadFile = File(...)) -> QuestionConte
     if not contents:
         raise HTTPException(status_code=400, detail="Uploaded file was empty.")
     try:
-        ctx = await extract_context_from_upload(file.filename or "upload", contents)
-        context_store.save_context(ctx)
-        if mcp_configured():
-            data_b64 = base64.b64encode(contents).decode("utf-8")
-            try:
-                await run_in_threadpool(
-                    call_mcp_tool,
-                    "upload_context",
-                    {
-                        "filename": file.filename or "upload",
-                        "data_b64": data_b64,
-                    },
-                )
-            except MCPClientError as exc:
-                logger.warning("Failed to sync context with MCP server: %s", exc)
-        return ctx
+        if not mcp_configured():
+            raise HTTPException(status_code=500, detail="LOCAL_MCP_SERVER_URL must be configured to upload contexts.")
+        data_b64 = base64.b64encode(contents).decode("utf-8")
+        try:
+            payload = await call_mcp_tool_async(
+                "upload_context",
+                {
+                    "filename": file.filename or "upload",
+                    "data_b64": data_b64,
+                },
+            )
+        except MCPClientError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+        context_data = (payload or {}).get("context")
+        if not context_data:
+            raise HTTPException(status_code=500, detail="MCP server did not return context metadata.")
+        return QuestionContextUploadResponse(**context_data)
     except QuestionGenerationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/question-sets/{set_id}/preview/insert", response_model=QuestionInsertionPreviewResponse)
+async def preview_question_insertion(set_id: int, payload: QuestionInsertionRequest) -> QuestionInsertionPreviewResponse:
+    question_set_payload = get_question_set(set_id)
+    if not question_set_payload:
+        raise HTTPException(status_code=404, detail="Question set not found.")
+    try:
+        preview_questions, merged_questions, insert_index = await run_in_threadpool(
+            generate_insertion_preview,
+            question_set_payload,
+            payload,
+        )
+    except QuestionGenerationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return QuestionInsertionPreviewResponse(
+        question_set=question_set_payload["question_set"],
+        preview_questions=preview_questions,
+        merged_questions=merged_questions,
+        insert_index=insert_index,
+    )
 
 
 @app.post("/api/papers/download", status_code=201)
