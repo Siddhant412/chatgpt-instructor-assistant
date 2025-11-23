@@ -193,6 +193,14 @@ function ResearchPapersPage({ onBack, onOpenNote }: { onBack: () => void; onOpen
     refresh();
   }, []);
 
+  useEffect(() => {
+    const onPaperAdded = () => {
+      void refresh();
+    };
+    window.addEventListener("qwen:paper-added", onPaperAdded);
+    return () => window.removeEventListener("qwen:paper-added", onPaperAdded);
+  }, []);
+
   const combinedPapers = useMemo(() => {
     const all = [...localPapers, ...papers];
     if (!hiddenPaperIds.size) {

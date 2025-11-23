@@ -28,6 +28,25 @@ export function QwenChatWidget({ onNavigate }: QwenChatWidgetProps) {
     try {
       const updated = await agentChat(nextHistory);
       setMessages(updated);
+      // Detect new papers added by the agent and broadcast an event so other views can refresh.
+      const addedPaperIds: number[] = [];
+      updated
+        .filter((m) => m.role === "tool" && typeof m.content === "string")
+        .forEach((m) => {
+          try {
+            const parsed = JSON.parse(m.content);
+            if (parsed && typeof parsed === "object" && typeof parsed.paper_id === "number") {
+              addedPaperIds.push(parsed.paper_id);
+            }
+          } catch {
+            /* ignore malformed JSON */
+          }
+        });
+      if (addedPaperIds.length > 0 && typeof window !== "undefined") {
+        window.dispatchEvent(
+          new CustomEvent("qwen:paper-added", { detail: { paperIds: addedPaperIds } })
+        );
+      }
     } finally {
       setBusy(false);
     }
@@ -79,7 +98,9 @@ export function QwenChatWidget({ onNavigate }: QwenChatWidgetProps) {
           </div>
 
           <div className="qwen-log">
-            {messages.map((m, idx) => {
+            {messages
+              .filter((m) => m.role !== "tool")
+              .map((m, idx) => {
               const label = m.role === "user" ? "You" : m.role === "assistant" ? "Qwen" : m.name || "Tool";
               return (
                 <div key={idx} className={`qwen-msg ${m.role}`}>

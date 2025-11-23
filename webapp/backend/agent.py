@@ -4,9 +4,11 @@ import json
 import os
 from typing import List, Dict, Any
 
+from pathlib import Path
 import ollama
 
 from . import qwen_tools
+from server.tools.add_paper import add_local_pdf
 
 # Define the function-calling tool schemas for the model
 TOOL_DEFS: List[Dict[str, Any]] = [
@@ -204,6 +206,16 @@ def run_agent(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
                 args = {}
             try:
                 result = qwen_tools.execute_tool(name or "", **(args or {}))
+                if name == "arxiv_download" and isinstance(result, dict) and result.get("file_path"):
+                    try:
+                        ingest = add_local_pdf(
+                            result.get("title"),
+                            Path(result["file_path"]),
+                            result.get("pdf_url") or result.get("arxiv_id"),
+                        )
+                        result["paper_id"] = ingest["paper_id"]
+                    except Exception as ingest_exc:
+                        result["ingest_error"] = f"Failed to add to library: {ingest_exc}"
                 result_text = json.dumps(result, ensure_ascii=False, indent=2)
             except Exception as exc:  # pragma: no cover - best-effort guard
                 result_text = f"Tool '{name}' failed: {exc}"
