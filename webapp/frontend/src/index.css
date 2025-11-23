@@ -671,6 +671,9 @@ textarea {
   display: block;
   color: inherit;
   font-size: 0.95rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .paper-card span {
@@ -710,17 +713,20 @@ textarea {
 button.paper-delete {
   color: #dc2626;
   border: 1px solid rgba(15, 23, 42, 0.12);
-  width: 26px;
-  height: 26px;
+  width: 18px;
+  height: 18px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.9rem;
+  font-size: 0.78rem;
+  padding: 0;
+  min-width: 0;
+  min-height: 0;
   position: absolute;
   top: 8px;
   right: 8px;
   background: #ffffff;
-  border-radius: 8px;
+  border-radius: 6px;
   box-shadow: 0 4px 10px rgba(15, 23, 42, 0.2);
   line-height: 1;
   font-weight: 700;
