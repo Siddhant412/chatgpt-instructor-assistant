@@ -197,8 +197,15 @@ function ResearchPapersPage({ onBack, onOpenNote }: { onBack: () => void; onOpen
     const onPaperAdded = () => {
       void refresh();
     };
+    const onNoteAdded = () => {
+      void refresh();
+    };
     window.addEventListener("qwen:paper-added", onPaperAdded);
-    return () => window.removeEventListener("qwen:paper-added", onPaperAdded);
+    window.addEventListener("qwen:note-added", onNoteAdded);
+    return () => {
+      window.removeEventListener("qwen:paper-added", onPaperAdded);
+      window.removeEventListener("qwen:note-added", onNoteAdded);
+    };
   }, []);
 
   const combinedPapers = useMemo(() => {

@@ -38,6 +38,9 @@ export function QwenChatWidget({ onNavigate }: QwenChatWidgetProps) {
             if (parsed && typeof parsed === "object" && typeof parsed.paper_id === "number") {
               addedPaperIds.push(parsed.paper_id);
             }
+            if (parsed && typeof parsed === "object" && typeof parsed.note_id === "number") {
+              window.dispatchEvent(new CustomEvent("qwen:note-added", { detail: { noteId: parsed.note_id } }));
+            }
           } catch {
             /* ignore malformed JSON */
           }
