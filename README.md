@@ -11,6 +11,7 @@ This repository contains the full-stack “Instructor Assistant” web app that 
   - *Upload*: Import existing Markdown, edit, or manage previously generated sets.
 - **Canvas Export** – Save Markdown locally or push directly to Canvas with per-quiz settings (course, title, time limit, publish toggle).
 - **Local LLM Support** – When `LLM_PROVIDER=local`, the backend orchestrates tool calls (`list_contexts`, `read_context`) so a local Llama model can read uploaded PDFs/PPTX excerpts before answering.
+- **Qwen Agent Chat** – Floating chat bubble (bottom-right) that uses a local Qwen model (via Ollama) to pick and call tools automatically (web/news/arXiv/PDF/YouTube) and guide you to Research Library, Notes, or Question Sets.
 
 ## Repository Layout
 
@@ -47,6 +48,10 @@ LITELLM_MODEL=gpt-5-mini
 # Local LLM (via Ollama or compatible REST API)
 LOCAL_LLM_URL=http://localhost:11434
 LOCAL_LLM_MODEL=llama3.1:8b
+
+# Qwen agent (Ollama)
+QWEN_AGENT_MODEL=qwen2.5:7b
+# OLLAMA_HOST=http://127.0.0.1:11434
 
 # Canvas integration
 CANVAS_API_URL=...
@@ -103,6 +108,25 @@ The server exposes these tools:
 - `read_context(context_id, start=0, length=4000)` – fetches a text slice from a context so the model can page through long documents.
 - `delete_context(context_id)` – removes a context entry.
 - `generate_question_set(instructions, context_ids?, provider?, question_count?, question_types?)` – invokes the shared `generate_questions` pipeline and returns the structured questions plus Canvas-ready Markdown.
+
+## Qwen Agent Chat (Ollama)
+
+The floating chat bubble in the web UI uses the local Qwen model (via Ollama) to automatically choose and call tools:
+
+Tools available: DuckDuckGo web search, Google News RSS, arXiv search/download, PDF text extraction/summary, YouTube search/download.
+
+Setup:
+1. Pull and run Qwen in Ollama:
+   ```bash
+   ollama pull qwen2.5:7b
+   ollama serve  # if not already running
+   ```
+2. Set env vars (in `.env`):
+   ```
+   QWEN_AGENT_MODEL=qwen2.5:7b
+   # OLLAMA_HOST=http://127.0.0.1:11434   # only if not using default
+   ```
+3. Start the API and frontend as usual. The chat bubble will call the Qwen agent.
 
 
 ## Canvas Push Workflow
