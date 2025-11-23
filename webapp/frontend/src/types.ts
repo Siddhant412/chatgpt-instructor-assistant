@@ -116,3 +116,79 @@ export interface CanvasPushResult {
   uploaded_questions: number;
   published: boolean;
 }
+
+// Agent chat
+export type AgentRole = "user" | "assistant" | "tool";
+
+export interface AgentChatMessage {
+  role: AgentRole;
+  content: string;
+  name?: string | null;
+}
+
+// Qwen tool payloads
+
+export interface WebSearchResult {
+  query: string;
+  results: { title: string; url: string; snippet: string }[];
+}
+
+export interface NewsArticle {
+  title: string;
+  link: string;
+  published: string;
+  summary: string;
+}
+
+export interface NewsResult {
+  topic: string;
+  articles: NewsArticle[];
+}
+
+export interface ArxivPaper {
+  title: string;
+  authors: string[];
+  arxiv_id: string;
+  published: string;
+  summary: string;
+  pdf_url: string;
+}
+
+export interface ArxivSearchResult {
+  query: string;
+  papers: ArxivPaper[];
+}
+
+export interface ArxivDownloadResult {
+  arxiv_id: string;
+  title: string;
+  file_path: string;
+  pdf_url: string;
+}
+
+export interface PdfSummaryResult {
+  pdf_path: string;
+  extracted_text: string;
+  text_length: number;
+  note?: string;
+}
+
+export interface YoutubeVideo {
+  title: string;
+  url: string;
+  duration: number;
+  channel: string;
+  view_count: number;
+}
+
+export interface YoutubeSearchResult {
+  query: string;
+  videos: YoutubeVideo[];
+}
+
+export interface YoutubeDownloadResult {
+  video_url: string;
+  title: string;
+  file_path: string;
+  duration: number;
+}

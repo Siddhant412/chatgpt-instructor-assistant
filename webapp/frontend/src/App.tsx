@@ -1,5 +1,6 @@
 import { ChangeEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import MarkdownRenderer from "./components/MarkdownRenderer";
+import { QwenChatWidget } from "./components/QwenChatWidget";
 import {
   API_BASE,
   createNote,
@@ -120,6 +121,7 @@ function App() {
         {page === "notes" && <NotesPage onBack={() => setPage("landing")} focusNoteId={focusNoteId} onFocusConsumed={() => setFocusNoteId(null)} />}
         {page === "questions" && <QuestionSetsPage onBack={() => setPage("landing")} />}
       </main>
+      <QwenChatWidget onNavigate={setPage} />
     </div>
   );
 }

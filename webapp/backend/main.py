@@ -39,6 +39,15 @@ from .schemas import (
     QuestionInsertionRequest,
     QuestionSetCreate,
     QuestionSetUpdate,
+    AgentChatRequest,
+    AgentChatResponse,
+    WebSearchRequest,
+    NewsRequest,
+    ArxivSearchRequest,
+    ArxivDownloadRequest,
+    PdfSummaryRequest,
+    YoutubeSearchRequest,
+    YoutubeDownloadRequest,
 )
 from .services import (
     QuestionGenerationError,
@@ -47,6 +56,7 @@ from .services import (
     summarize_paper_chat,
     stream_generate_questions,
 )
+from .agent import run_agent
 from .mcp_client import (
     MCPClientError,
     call_tool as call_mcp_tool,
@@ -54,6 +64,7 @@ from .mcp_client import (
     is_configured as mcp_configured,
 )
 from .canvas_service import CanvasPushError, push_question_set_to_canvas
+from . import qwen_tools
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
 
@@ -356,6 +367,76 @@ def push_question_set_canvas(set_id: int, payload: CanvasPushRequest) -> Dict[st
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return CanvasPushResponse(**result)
+
+
+# Qwen tool endpoints
+
+def _wrap_tool_call(fn, **kwargs) -> Dict[str, Any]:
+    try:
+        return fn(**kwargs)
+    except Exception as exc:
+        logger.exception("Tool execution failed")
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/tools/web-search")
+def tool_web_search(payload: WebSearchRequest) -> Dict[str, Any]:
+    return {"result": _wrap_tool_call(qwen_tools.web_search, query=payload.query, max_results=payload.max_results or 5)}
+
+
+@app.post("/api/tools/news")
+def tool_news(payload: NewsRequest) -> Dict[str, Any]:
+    return {"result": _wrap_tool_call(qwen_tools.get_news, topic=payload.topic, limit=payload.limit or 10)}
+
+
+@app.post("/api/tools/arxiv/search")
+def tool_arxiv_search(payload: ArxivSearchRequest) -> Dict[str, Any]:
+    return {"result": _wrap_tool_call(qwen_tools.arxiv_search, query=payload.query, max_results=payload.max_results or 5)}
+
+
+@app.post("/api/tools/arxiv/download")
+def tool_arxiv_download(payload: ArxivDownloadRequest) -> Dict[str, Any]:
+    return {
+        "result": _wrap_tool_call(
+            qwen_tools.arxiv_download,
+            arxiv_id=payload.arxiv_id,
+            output_path=payload.output_path,
+        )
+    }
+
+
+@app.post("/api/tools/pdf/summary")
+def tool_pdf_summary(payload: PdfSummaryRequest) -> Dict[str, Any]:
+    return {"result": _wrap_tool_call(qwen_tools.pdf_summary, pdf_path=payload.pdf_path)}
+
+
+@app.post("/api/tools/youtube/search")
+def tool_youtube_search(payload: YoutubeSearchRequest) -> Dict[str, Any]:
+    return {
+        "result": _wrap_tool_call(
+            qwen_tools.youtube_search, query=payload.query, max_results=payload.max_results or 5
+        )
+    }
+
+
+@app.post("/api/tools/youtube/download")
+def tool_youtube_download(payload: YoutubeDownloadRequest) -> Dict[str, Any]:
+    return {
+        "result": _wrap_tool_call(
+            qwen_tools.youtube_download,
+            video_url=payload.video_url,
+            output_path=payload.output_path,
+        )
+    }
+
+
+@app.post("/api/agent/chat", response_model=AgentChatResponse)
+def agent_chat(payload: AgentChatRequest) -> AgentChatResponse:
+    try:
+        convo = run_agent([m.model_dump() for m in payload.messages])
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return AgentChatResponse(messages=convo)
 
 
 if __name__ == "__main__":

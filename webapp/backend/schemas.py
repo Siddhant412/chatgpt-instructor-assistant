@@ -145,3 +145,51 @@ class CanvasPushResponse(BaseModel):
     total_questions: int
     uploaded_questions: int
     published: bool
+
+
+class AgentChatMessage(BaseModel):
+    role: Literal["user", "assistant", "tool"]
+    content: str
+    name: str | None = None
+
+
+class AgentChatRequest(BaseModel):
+    messages: List[AgentChatMessage] = Field(default_factory=list)
+
+
+class AgentChatResponse(BaseModel):
+    messages: List[AgentChatMessage]
+
+
+class WebSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    max_results: int | None = Field(default=5, ge=1, le=20)
+
+
+class NewsRequest(BaseModel):
+    topic: str = Field(..., min_length=1)
+    limit: int | None = Field(default=10, ge=1, le=25)
+
+
+class ArxivSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    max_results: int | None = Field(default=5, ge=1, le=20)
+
+
+class ArxivDownloadRequest(BaseModel):
+    arxiv_id: str = Field(..., min_length=4)
+    output_path: str | None = None
+
+
+class PdfSummaryRequest(BaseModel):
+    pdf_path: str = Field(..., min_length=1, description="Path to a PDF file")
+
+
+class YoutubeSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1)
+    max_results: int | None = Field(default=5, ge=1, le=20)
+
+
+class YoutubeDownloadRequest(BaseModel):
+    video_url: str = Field(..., min_length=4)
+    output_path: str | None = None

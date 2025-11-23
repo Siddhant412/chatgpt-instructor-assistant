@@ -13,7 +13,15 @@ import {
   QuestionSetPayload,
   QuestionStreamEvent,
   CanvasPushRequest,
-  CanvasPushResult
+  CanvasPushResult,
+  AgentChatMessage,
+  WebSearchResult,
+  NewsResult,
+  ArxivSearchResult,
+  ArxivDownloadResult,
+  PdfSummaryResult,
+  YoutubeSearchResult,
+  YoutubeDownloadResult
 } from "./types";
 
 const DEFAULT_BASE = (import.meta.env.VITE_API_BASE as string | undefined) || "http://localhost:8010/api";
@@ -204,4 +212,78 @@ export async function previewQuestionInsertion(
     method: "POST",
     body: JSON.stringify(input)
   });
+}
+
+// Agent chat
+
+export async function agentChat(messages: AgentChatMessage[]): Promise<AgentChatMessage[]> {
+  const data = await request<{ messages: AgentChatMessage[] }>("/agent/chat", {
+    method: "POST",
+    body: JSON.stringify({ messages })
+  });
+  return data.messages;
+}
+
+// Qwen tool calls
+
+export async function toolWebSearch(input: { query: string; max_results?: number }): Promise<WebSearchResult> {
+  const data = await request<{ result: WebSearchResult }>("/tools/web-search", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+  return data.result;
+}
+
+export async function toolNews(input: { topic: string; limit?: number }): Promise<NewsResult> {
+  const data = await request<{ result: NewsResult }>("/tools/news", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+  return data.result;
+}
+
+export async function toolArxivSearch(input: { query: string; max_results?: number }): Promise<ArxivSearchResult> {
+  const data = await request<{ result: ArxivSearchResult }>("/tools/arxiv/search", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+  return data.result;
+}
+
+export async function toolArxivDownload(input: {
+  arxiv_id: string;
+  output_path?: string | null;
+}): Promise<ArxivDownloadResult> {
+  const data = await request<{ result: ArxivDownloadResult }>("/tools/arxiv/download", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+  return data.result;
+}
+
+export async function toolPdfSummary(input: { pdf_path: string }): Promise<PdfSummaryResult> {
+  const data = await request<{ result: PdfSummaryResult }>("/tools/pdf/summary", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+  return data.result;
+}
+
+export async function toolYoutubeSearch(input: { query: string; max_results?: number }): Promise<YoutubeSearchResult> {
+  const data = await request<{ result: YoutubeSearchResult }>("/tools/youtube/search", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+  return data.result;
+}
+
+export async function toolYoutubeDownload(input: {
+  video_url: string;
+  output_path?: string | null;
+}): Promise<YoutubeDownloadResult> {
+  const data = await request<{ result: YoutubeDownloadResult }>("/tools/youtube/download", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+  return data.result;
 }
