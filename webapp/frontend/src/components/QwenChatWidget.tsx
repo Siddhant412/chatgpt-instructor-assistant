@@ -152,6 +152,31 @@ function formatToolResult(message: AgentChatMessage): React.ReactNode {
       );
     }
 
+    // Format arXiv download results
+    if (message.name === "arxiv_download" && "arxiv_id" in data) {
+      const result = data as any;
+      return (
+        <div className="tool-result arxiv-download">
+          <div className="tool-result-header">Downloaded paper</div>
+          <div className="tool-result-item">
+            <div className="tool-result-title">
+              <strong>{result.title || "Untitled"}</strong>
+            </div>
+            <div className="tool-result-meta">
+              <span>arXiv ID: {result.arxiv_id}</span>
+              {result.file_path && <span>Saved to: {result.file_path}</span>}
+            </div>
+            {result.paper_id && (
+              <div className="tool-result-success">✓ Added to Research Library (ID: {result.paper_id})</div>
+            )}
+            {result.ingest_error && (
+              <div className="tool-result-error">⚠ {result.ingest_error}</div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
     // For other tool results or if parsing fails, show formatted JSON
     return (
       <pre className="tool-result-json">{JSON.stringify(data, null, 2)}</pre>
@@ -319,6 +344,20 @@ export function QwenChatWidget({ onNavigate }: QwenChatWidgetProps) {
                 const prevMessage = messages[idx - 1];
                 if (prevMessage && prevMessage.role === "tool") {
                   return null; // Skip assistant message that duplicates tool result
+                }
+                // Also hide assistant messages with tool_calls (they're just stubs before tool execution)
+                const msgWithToolCalls = m as any;
+                if (msgWithToolCalls.tool_calls && Array.isArray(msgWithToolCalls.tool_calls) && msgWithToolCalls.tool_calls.length > 0) {
+                  return null;
+                }
+              }
+              
+              // Hide arxiv_download results when they immediately follow arxiv_search
+              // (the search result is sufficient, download confirmation is redundant)
+              if (m.role === "tool" && m.name === "arxiv_download") {
+                const prevMessage = messages[idx - 1];
+                if (prevMessage && prevMessage.role === "tool" && prevMessage.name === "arxiv_search") {
+                  return null; // Hide download result when it follows a search
                 }
               }
               

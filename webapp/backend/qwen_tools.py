@@ -14,7 +14,7 @@ from duckduckgo_search import DDGS
 from pypdf import PdfReader
 
 # Download location shared by all tools
-DOWNLOADS_DIR = Path(__file__).resolve().parents[1] / "downloads"
+DOWNLOADS_DIR = Path(__file__).resolve().parents[2] / "server" / "data" / "pdfs"
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
