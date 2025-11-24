@@ -13,6 +13,7 @@ from . import qwen_tools
 from server.tools.add_paper import add_local_pdf
 from webapp.backend.services import summarize_paper_chat
 from webapp.backend.schemas import PaperChatMessage
+from webapp.backend.mcp_client import call_tool as call_mcp_tool
 
 # Define the function-calling tool schemas for the model
 TOOL_DEFS: List[Dict[str, Any]] = [
@@ -145,6 +146,78 @@ TOOL_DEFS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "list_contexts",
+            "description": "List uploaded PDF/PPTX contexts for question generation.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_context",
+            "description": "Read a slice of an uploaded context.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "context_id": {"type": "string", "description": "Context ID to read"},
+                    "start": {"type": "integer", "description": "Start offset", "default": 0},
+                    "length": {"type": "integer", "description": "Max characters to read", "default": 4000},
+                },
+                "required": ["context_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_question_set",
+            "description": "Generate a question set from uploaded contexts using GPT-5 (OpenAI).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "instructions": {"type": "string", "description": "Generation instructions"},
+                    "question_count": {"type": "integer", "description": "Desired number of questions"},
+                    "question_types": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Preferred question types (mcq, short_answer, true_false, essay)",
+                    },
+                    "context_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Specific context IDs to use (optional)",
+                    },
+                },
+                "required": ["instructions"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "download_markdown",
+            "description": "Return markdown content for download.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "markdown": {"type": "string", "description": "Markdown content"},
+                    "filename": {"type": "string", "description": "Suggested filename"},
+                },
+                "required": ["markdown"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "navigate_md_editor",
+            "description": "Ask the UI to open the Question Sets markdown editor.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "summarize_paper",
             "description": "Summarize a downloaded paper (defaults to most recent download).",
             "parameters": {
@@ -251,6 +324,75 @@ def _summarize_paper(paper_id: int) -> Dict[str, Any]:
     }
 
 
+def _list_contexts() -> Dict[str, Any]:
+    payload = call_mcp_tool("list_contexts", {})
+    return payload or {}
+
+
+def _read_context(context_id: str, start: int | None = None, length: int | None = None) -> Dict[str, Any]:
+    return call_mcp_tool(
+        "read_context",
+        {"context_id": context_id, "start": start, "length": length},
+    )
+
+
+def _combine_contexts_text(context_ids: List[str] | None, max_chars: int = 60000) -> str:
+    ctxs = _list_contexts().get("contexts") or []
+    selected = ctxs if not context_ids else [c for c in ctxs if c.get("context_id") in context_ids]
+    parts: List[str] = []
+    remaining = max_chars
+    for ctx in selected:
+        cid = ctx.get("context_id")
+        if not cid or remaining <= 0:
+            continue
+        chunk = _read_context(cid, 0, min(4000, remaining)).get("content") or ""
+        if not chunk:
+            continue
+        if len(chunk) > remaining:
+            chunk = chunk[:remaining]
+        parts.append(f"[{ctx.get('filename')}] {chunk}")
+        remaining -= len(chunk)
+    return "\n\n".join(parts).strip()
+
+
+def _generate_question_set_from_context(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from webapp.backend.services import QuestionGenerationRequest, generate_questions
+
+    raw_instructions = payload.get("instructions") or ""
+    question_count = payload.get("question_count")
+    question_types = payload.get("question_types")
+    context_ids = payload.get("context_ids")
+    context_text = _combine_contexts_text(context_ids or None)
+    if not context_text:
+        raise ValueError("No context available. Upload a PDF/PPTX first.")
+    instructions = raw_instructions.strip()
+    if len(instructions) < 5:
+        # Build a minimal default prompt if counts/types are provided; otherwise, ask user for a prompt.
+        parts = []
+        if question_count:
+            parts.append(f"Generate {question_count} questions")
+        if question_types:
+            parts.append(f"Types: {', '.join(question_types)}")
+        default_instr = " ".join(parts).strip()
+        if default_instr:
+            instructions = default_instr + " grounded in the uploaded documents."
+        else:
+            raise ValueError("Provide instructions (at least 5 characters) for question generation.")
+    req = QuestionGenerationRequest(
+        instructions=instructions,
+        context=context_text,
+        question_count=question_count,
+        question_types=question_types,
+        provider="openai",
+    )
+    result = generate_questions(req)
+    return {
+        "questions": [q.model_dump() for q in result.questions],
+        "markdown": result.markdown,
+        "raw_response": result.raw_response,
+    }
+
+
 def run_agent(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
     """
     Run an agent loop with function calling via Ollama (Qwen).
@@ -317,6 +459,24 @@ def run_agent(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
                     if pid is None:
                         raise ValueError("paper_id is required.")
                     result = _save_note_direct(int(pid), args.get("title"), args.get("body") or "")
+                elif name == "list_contexts":
+                    result = _list_contexts()
+                elif name == "read_context":
+                    result = _read_context(
+                        args.get("context_id"),
+                        args.get("start"),
+                        args.get("length"),
+                    )
+                elif name == "generate_question_set":
+                    result = _generate_question_set_from_context(args or {})
+                elif name == "download_markdown":
+                    md = args.get("markdown") if isinstance(args, dict) else None
+                    fname = args.get("filename") if isinstance(args, dict) else None
+                    if not md:
+                        raise ValueError("No markdown content provided.")
+                    result = {"markdown": md, "filename": fname or "question-set.md", "download": True}
+                elif name == "navigate_md_editor":
+                    result = {"action": "open_md_editor"}
                 else:
                     raise ValueError(f"Unknown tool: {name}")
 
