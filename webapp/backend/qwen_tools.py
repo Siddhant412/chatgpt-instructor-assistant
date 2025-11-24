@@ -94,7 +94,7 @@ def arxiv_search(query: str, max_results: int = 5) -> Dict[str, object]:
     """Search arXiv for papers matching a query."""
     search = arxiv.Search(
         query=query,
-        max_results=c,
+        max_results=max_results,
         sort_by=arxiv.SortCriterion.Relevance,
     )
     papers: List[Dict[str, object]] = []
