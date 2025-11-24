@@ -48,6 +48,11 @@ from .schemas import (
     PdfSummaryRequest,
     YoutubeSearchRequest,
     YoutubeDownloadRequest,
+    RAGIngestRequest,
+    RAGIngestResponse,
+    RAGQueryRequest,
+    RAGQueryResponse,
+    RAGIndexStatusResponse,
 )
 from .services import (
     QuestionGenerationError,
@@ -65,6 +70,7 @@ from .mcp_client import (
 )
 from .canvas_service import CanvasPushError, push_question_set_to_canvas
 from . import qwen_tools
+from .rag import ingest, query
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
 
@@ -437,6 +443,108 @@ def agent_chat(payload: AgentChatRequest) -> AgentChatResponse:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return AgentChatResponse(messages=convo)
+
+
+# RAG endpoints
+
+@app.post("/api/rag/ingest", response_model=RAGIngestResponse)
+async def rag_ingest(payload: RAGIngestRequest) -> RAGIngestResponse:
+    """Ingest PDFs from papers directory and create FAISS index."""
+    def _run_ingestion():
+        try:
+            papers_dir = payload.papers_dir or "server/data/pdfs"
+            index_dir = payload.index_dir or "index"
+            chunk_size = payload.chunk_size or 1200
+            chunk_overlap = payload.chunk_overlap or 200
+
+            logger.info(f"Starting ingestion: papers_dir={papers_dir}, index_dir={index_dir}")
+
+            # Load PDFs
+            documents = ingest.load_pdfs(papers_dir)
+            if not documents:
+                return RAGIngestResponse(
+                    success=False,
+                    message=f"No PDF files found in {papers_dir}",
+                    num_documents=0
+                )
+
+            logger.info(f"Loaded {len(documents)} documents")
+
+            # Split into chunks
+            chunks = ingest.split_documents(documents, chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+            logger.info(f"Created {len(chunks)} chunks")
+
+            # Create index
+            ingest.create_faiss_index(chunks, index_dir=index_dir)
+            logger.info("FAISS index created successfully")
+
+            return RAGIngestResponse(
+                success=True,
+                message=f"Successfully ingested {len(documents)} documents into {len(chunks)} chunks",
+                num_documents=len(documents),
+                num_chunks=len(chunks),
+                index_dir=index_dir
+            )
+        except ValueError as ve:
+            logger.error(f"RAG ingestion validation error: {ve}")
+            raise
+        except Exception as e:
+            logger.exception("RAG ingestion failed with unexpected error")
+            raise ValueError(f"Ingestion failed: {str(e)}") from e
+
+    try:
+        return await run_in_threadpool(_run_ingestion)
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as exc:
+        logger.exception("RAG ingestion failed")
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(exc)}")
+
+
+@app.get("/api/rag/status", response_model=RAGIndexStatusResponse)
+def rag_status(index_dir: str = "index") -> RAGIndexStatusResponse:
+    """Check the status of the RAG index."""
+    try:
+        status = query.check_index_status(index_dir=index_dir)
+        return RAGIndexStatusResponse(**status)
+    except Exception as exc:
+        logger.exception("Failed to check RAG index status")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/rag/query", response_model=RAGQueryResponse)
+async def rag_query(payload: RAGQueryRequest) -> RAGQueryResponse:
+    """Query the RAG system with a question."""
+    try:
+        index_dir = payload.index_dir or "index"
+        k = payload.k or 6
+        headless = payload.headless if payload.headless is not None else False  # Default to False to show browser
+
+        result = await run_in_threadpool(
+            query.query_rag,
+            payload.question,
+            index_dir=index_dir,
+            k=k,
+            headless=headless
+        )
+
+        # Convert context info to proper format
+        from .schemas import RAGContextInfo
+        context_info = [
+            RAGContextInfo(**ctx) for ctx in result["context"]
+        ]
+
+        return RAGQueryResponse(
+            question=result["question"],
+            answer=result["answer"],
+            context=context_info,
+            num_sources=result["num_sources"]
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.exception("RAG query failed")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,8 @@
 import { ChangeEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import MarkdownRenderer from "./components/MarkdownRenderer";
 import { QwenChatWidget } from "./components/QwenChatWidget";
+import { QwenFullPage } from "./components/QwenFullPage";
+import RAGPage from "./components/RAGPage";
 import {
   API_BASE,
   createNote,
@@ -113,6 +115,12 @@ function App() {
           <button className={page === "questions" ? "primary" : ""} onClick={() => setPage("questions")}>
             Question Sets
           </button>
+          <button className={page === "qwen" ? "primary" : ""} onClick={() => setPage("qwen")}>
+            Qwen Agent
+          </button>
+          <button className={page === "rag" ? "primary" : ""} onClick={() => setPage("rag")}>
+            RAG System
+          </button>
         </nav>
       </header>
       <main>
@@ -120,8 +128,10 @@ function App() {
         {page === "papers" && <ResearchPapersPage onBack={() => setPage("landing")} onOpenNote={handleOpenNote} />}
         {page === "notes" && <NotesPage onBack={() => setPage("landing")} focusNoteId={focusNoteId} onFocusConsumed={() => setFocusNoteId(null)} />}
         {page === "questions" && <QuestionSetsPage onBack={() => setPage("landing")} />}
+        {page === "qwen" && <QwenFullPage onNavigate={setPage} />}
+        {page === "rag" && <RAGPage onBack={() => setPage("landing")} />}
       </main>
-      <QwenChatWidget onNavigate={setPage} />
+      {page !== "qwen" && <QwenChatWidget onNavigate={setPage} />}
     </div>
   );
 }
@@ -156,6 +166,15 @@ function Landing({ onNavigate }: { onNavigate: (page: Page) => void }) {
         </header>
         <button className="primary" onClick={() => onNavigate("questions")}>
           Create Questions
+        </button>
+      </article>
+      <article className="panel-card">
+        <header>
+          <h2>RAG System</h2>
+          <p>Query your PDF library with retrieval-augmented generation. Get answers with citations from your papers.</p>
+        </header>
+        <button className="primary" onClick={() => onNavigate("rag")}>
+          Open RAG
         </button>
       </article>
     </section>

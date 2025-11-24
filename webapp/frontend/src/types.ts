@@ -1,4 +1,4 @@
-export type Page = "landing" | "papers" | "notes" | "questions";
+export type Page = "landing" | "papers" | "notes" | "questions" | "qwen" | "rag";
 
 export interface Paper {
   id: number;
@@ -138,6 +138,7 @@ export interface NewsArticle {
   link: string;
   published: string;
   summary: string;
+  source?: string;
 }
 
 export interface NewsResult {
@@ -191,4 +192,47 @@ export interface YoutubeDownloadResult {
   title: string;
   file_path: string;
   duration: number;
+}
+
+// RAG types
+export interface RAGIngestRequest {
+  papers_dir?: string;
+  index_dir?: string;
+  chunk_size?: number;
+  chunk_overlap?: number;
+}
+
+export interface RAGIngestResponse {
+  success: boolean;
+  message: string;
+  num_documents?: number;
+  num_chunks?: number;
+  index_dir?: string;
+}
+
+export interface RAGIndexStatusResponse {
+  exists: boolean;
+  message: string;
+  index_dir?: string;
+}
+
+export interface RAGContextInfo {
+  paper: string;
+  source: string;
+  chunk_count: number;
+  index: number;
+}
+
+export interface RAGQueryRequest {
+  question: string;
+  index_dir?: string;
+  k?: number;
+  headless?: boolean;
+}
+
+export interface RAGQueryResponse {
+  question: string;
+  answer: string;
+  context: RAGContextInfo[];
+  num_sources: number;
 }

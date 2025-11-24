@@ -193,3 +193,46 @@ class YoutubeSearchRequest(BaseModel):
 class YoutubeDownloadRequest(BaseModel):
     video_url: str = Field(..., min_length=4)
     output_path: str | None = None
+
+
+# RAG schemas
+class RAGIngestRequest(BaseModel):
+    papers_dir: str | None = Field(default="data/papers", description="Directory containing PDF files")
+    index_dir: str | None = Field(default="index", description="Directory to save the FAISS index")
+    chunk_size: int | None = Field(default=1200, ge=100, le=5000)
+    chunk_overlap: int | None = Field(default=200, ge=0, le=1000)
+
+
+class RAGIngestResponse(BaseModel):
+    success: bool
+    message: str
+    num_documents: int | None = None
+    num_chunks: int | None = None
+    index_dir: str | None = None
+
+
+class RAGQueryRequest(BaseModel):
+    question: str = Field(..., min_length=1)
+    index_dir: str | None = Field(default="index", description="Directory containing the FAISS index")
+    k: int | None = Field(default=6, ge=1, le=20, description="Number of chunks to retrieve")
+    headless: bool | None = Field(default=False, description="Run browser in headless mode (False = show browser window for login)")
+
+
+class RAGContextInfo(BaseModel):
+    paper: str
+    source: str
+    chunk_count: int
+    index: int
+
+
+class RAGQueryResponse(BaseModel):
+    question: str
+    answer: str
+    context: List[RAGContextInfo]
+    num_sources: int
+
+
+class RAGIndexStatusResponse(BaseModel):
+    exists: bool
+    message: str
+    index_dir: str | None = None

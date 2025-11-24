@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
+import urllib.parse
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import arxiv
 import feedparser
+import requests
 import yt_dlp
 from duckduckgo_search import DDGS
 from pypdf import PdfReader
@@ -49,27 +52,49 @@ def web_search(query: str, max_results: int = 5) -> Dict[str, object]:
     }
 
 
+def _strip_html(text: str) -> str:
+    """Remove HTML tags from text."""
+    return re.sub(r'<[^>]+>', '', text)
+
+
 def get_news(topic: str, limit: int = 10) -> Dict[str, object]:
-    """Fetch headlines from Google News RSS."""
-    url = f"https://news.google.com/rss/search?q={topic}&hl=en-US&gl=US&ceid=US:en"
-    feed = feedparser.parse(url)
-    articles = [
-        {
-            "title": entry.get("title", ""),
-            "link": entry.get("link", ""),
-            "published": entry.get("published", ""),
-            "summary": entry.get("summary", "")[:500],
+    """
+    Fetch from Bing News RSS - works like Google News but faster updates.
+    Great for specific/niche topics.
+    """
+    encoded_topic = urllib.parse.quote(topic)
+    url = f"https://www.bing.com/news/search?q={encoded_topic}&format=rss"
+    
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
-        for entry in (feed.entries or [])[:limit]
-    ]
-    return {"topic": topic, "articles": articles}
+        response = requests.get(url, headers=headers, timeout=10)
+        feed = feedparser.parse(response.content)
+        
+        articles = [
+            {
+                "title": _strip_html(entry.get("title", "")),
+                "link": entry.get("link", ""),
+                "published": entry.get("published", ""),
+                "summary": _strip_html(entry.get("summary", entry.get("description", "")))[:500],
+                "source": entry.get("source", {}).get("title", "Unknown") if isinstance(entry.get("source"), dict) else "Bing News"
+            }
+            for entry in (feed.entries or [])[:limit]
+        ]
+        
+        return {"topic": topic, "articles": articles}
+    
+    except Exception as e:
+        print(f"Bing News fetch error: {e}")
+        return {"topic": topic, "articles": []}
 
 
 def arxiv_search(query: str, max_results: int = 5) -> Dict[str, object]:
     """Search arXiv for papers matching a query."""
     search = arxiv.Search(
         query=query,
-        max_results=max_results,
+        max_results=c,
         sort_by=arxiv.SortCriterion.Relevance,
     )
     papers: List[Dict[str, object]] = []

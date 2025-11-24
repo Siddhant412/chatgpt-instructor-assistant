@@ -21,7 +21,12 @@ import {
   ArxivDownloadResult,
   PdfSummaryResult,
   YoutubeSearchResult,
-  YoutubeDownloadResult
+  YoutubeDownloadResult,
+  RAGIngestRequest,
+  RAGIngestResponse,
+  RAGIndexStatusResponse,
+  RAGQueryRequest,
+  RAGQueryResponse
 } from "./types";
 
 const DEFAULT_BASE = (import.meta.env.VITE_API_BASE as string | undefined) || "http://localhost:8010/api";
@@ -286,4 +291,56 @@ export async function toolYoutubeDownload(input: {
     body: JSON.stringify(input)
   });
   return data.result;
+}
+
+// RAG API functions
+
+export async function ragIngest(input: RAGIngestRequest): Promise<RAGIngestResponse> {
+  // Use a longer timeout for ingestion (5 minutes)
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5 * 60 * 1000);
+  
+  try {
+    const res = await fetch(`${API_BASE}/rag/ingest`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(input),
+      signal: controller.signal
+    });
+    
+    clearTimeout(timeoutId);
+    
+    if (!res.ok) {
+      let detail = res.statusText;
+      try {
+        const data = await res.json();
+        detail = data.detail || JSON.stringify(data);
+      } catch {
+        // swallow
+      }
+      throw new Error(detail || "Request failed");
+    }
+    
+    return (await res.json()) as RAGIngestResponse;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new Error("Ingestion timeout: The process is taking longer than expected. Please check the server logs.");
+    }
+    throw err;
+  }
+}
+
+export async function ragGetStatus(index_dir?: string): Promise<RAGIndexStatusResponse> {
+  const params = index_dir ? `?index_dir=${encodeURIComponent(index_dir)}` : "";
+  return request<RAGIndexStatusResponse>(`/rag/status${params}`);
+}
+
+export async function ragQuery(input: RAGQueryRequest): Promise<RAGQueryResponse> {
+  return request<RAGQueryResponse>("/rag/query", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
 }

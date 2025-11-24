@@ -250,7 +250,19 @@ TOOL_DEFS: List[Dict[str, Any]] = [
 ]
 
 
-SYSTEM_PROMPT = """You are an autonomous assistant with access to callable tools.
+SYSTEM_PROMPT = """You are a helpful AI assistant with access to various tools.
+
+IMPORTANT TOOL USAGE RULES:
+
+1. When user asks to "download" or "get" papers/videos, you MUST use the download tools (arxiv_download, youtube_download)
+
+2. When user asks to "find" or "search", use search tools first (arxiv_search, youtube_search)
+
+3. If user says "download and summarize", use download tool THEN pdf_summary tool
+
+4. ALWAYS actually execute download tools - don't just provide links
+
+5. After downloading, confirm the file location
 
 Pick and call tools when they help answer the user's request. Prefer accurate retrieval over guessing.
 If a task references the app's pages, you can mention the right section (Research Library, Notes, Question Sets) but tools are your primary way to fetch fresh info.
@@ -259,7 +271,23 @@ When the user asks for a paper summary:
 - If no paper_id is provided and no recent download is known, ask which paper (by id/title) to summarize.
 - If summarization fails, report the error instead of guessing.
 After summarizing, ask if the user wants to save it to Notes; if yes, call save_note_entry with the summary.
-When saving a summary/note, use the paper title as the note title (unless the user provides one) and tell the user it was saved to Notes (not the Research Library)."""
+When saving a summary/note, use the paper title as the note title (unless the user provides one) and tell the user it was saved to Notes (not the Research Library).
+
+Available actions:
+
+- arxiv_search: Find papers (returns metadata)
+
+- arxiv_download: Actually download PDF files locally
+
+- youtube_search: Find videos (returns metadata)  
+
+- youtube_download: Actually download video files locally
+
+- web_search: Search the web
+
+- get_news: Get latest news
+
+- pdf_summary: Summarize downloaded PDFs"""
 
 QWEN_MODEL = os.getenv("QWEN_AGENT_MODEL", "qwen2.5:7b")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST")  # optional override

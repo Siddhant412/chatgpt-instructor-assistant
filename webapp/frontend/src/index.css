@@ -1392,11 +1392,72 @@ button.set-delete:hover {
 
 .markdown-preview-content p {
   margin: 8px 0;
+  line-height: 1.6;
 }
 
 .markdown-preview-content ul {
   padding-left: 20px;
   margin: 8px 0;
+}
+
+.markdown-preview-content code {
+  background: #f1f5f9;
+  padding: 0.125em 0.375em;
+  border-radius: 3px;
+  font-family: "Monaco", "Menlo", "Consolas", monospace;
+  font-size: 0.9em;
+}
+
+.markdown-preview-content pre {
+  background: #1e293b;
+  color: #e2e8f0;
+  padding: 1em;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 1em 0;
+}
+
+.markdown-preview-content pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: 0.875em;
+}
+
+.markdown-preview-content .citation {
+  background: #dbeafe;
+  color: #1e40af;
+  padding: 0.125em 0.375em;
+  border-radius: 3px;
+  font-weight: 600;
+  font-size: 0.9em;
+}
+
+.markdown-preview-content a {
+  color: #2563eb;
+  text-decoration: underline;
+}
+
+.markdown-preview-content a:hover {
+  color: #1d4ed8;
+}
+
+.chat-content {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+.chat-content p {
+  margin: 0.5em 0;
+  line-height: 1.6;
+}
+
+.chat-content p:first-child {
+  margin-top: 0;
+}
+
+.chat-content p:last-child {
+  margin-bottom: 0;
 }
 
 .markdown-mode-toggle {
@@ -1573,6 +1634,86 @@ button.set-delete:hover {
   color: inherit;
 }
 
+/* Tool result formatting */
+.tool-result {
+  margin: 0;
+  font-family: inherit;
+}
+
+.tool-result-header {
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: rgba(229, 231, 235, 0.9);
+  font-size: 0.85rem;
+}
+
+.tool-result-list {
+  margin: 0;
+  padding-left: 20px;
+  list-style: decimal;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tool-result-item {
+  margin: 0;
+  padding: 0;
+}
+
+.tool-result-title {
+  margin-bottom: 4px;
+}
+
+.tool-result-link {
+  color: #60a5fa;
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.tool-result-link:hover {
+  text-decoration: underline;
+  color: #93c5fd;
+}
+
+.tool-result-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  color: rgba(229, 231, 235, 0.65);
+}
+
+.tool-result-channel,
+.tool-result-duration,
+.tool-result-views,
+.tool-result-date,
+.tool-result-authors {
+  display: inline-block;
+}
+
+.tool-result-snippet {
+  margin-top: 6px;
+  font-size: 0.8rem;
+  color: rgba(229, 231, 235, 0.8);
+  line-height: 1.4;
+  max-width: 100%;
+  overflow-wrap: break-word;
+}
+
+.tool-result-json {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  font-family: "Inter", "SFMono-Regular", Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+  color: inherit;
+  opacity: 0.85;
+}
+
 .qwen-controls {
   display: flex;
   flex-direction: column;
@@ -1661,5 +1802,206 @@ button.set-delete:hover {
     right: 12px;
     bottom: 86px;
     width: calc(100vw - 24px);
+  }
+}
+
+/* Qwen full page */
+.page.qwen-full {
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.qwen-full-container {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 24px;
+  margin-top: 24px;
+}
+
+.qwen-full-sidebar {
+  background: white;
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+  height: fit-content;
+  position: sticky;
+  top: 24px;
+}
+
+.qwen-full-section {
+  margin-bottom: 32px;
+}
+
+.qwen-full-section:last-child {
+  margin-bottom: 0;
+}
+
+.qwen-full-section h3 {
+  margin: 0 0 16px 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.qwen-tools-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.qwen-tools-list li {
+  padding: 10px 12px;
+  background: #f5f7fb;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+}
+
+.qwen-quick-links-vertical {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.qwen-quick-links-vertical button {
+  width: 100%;
+  text-align: left;
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: white;
+  color: #0f172a;
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+
+.qwen-quick-links-vertical button:hover {
+  background: #f5f7fb;
+  border-color: #cbd5e1;
+}
+
+.qwen-full-chat {
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+  display: flex;
+  flex-direction: column;
+  min-height: 600px;
+  max-height: calc(100vh - 200px);
+}
+
+.qwen-full-chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.qwen-full-chat-header strong {
+  font-size: 1.2rem;
+  color: #0f172a;
+}
+
+.qwen-full-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+  background: #f5f7fb;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.qwen-full-log .qwen-msg {
+  max-width: 75%;
+  font-size: 0.9rem;
+  padding: 12px 16px;
+  border-radius: 16px;
+  line-height: 1.5;
+}
+
+.qwen-full-log .qwen-msg.user {
+  background: #2563eb;
+  color: #ffffff;
+  align-self: flex-end;
+  border: none;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.2);
+}
+
+.qwen-full-log .qwen-msg.assistant,
+.qwen-full-log .qwen-msg.tool {
+  align-self: flex-start;
+  background: #ffffff;
+  color: #0f172a;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+}
+
+.qwen-full-log .qwen-msg-role {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(15, 23, 42, 0.6);
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+.qwen-full-log .qwen-msg.user .qwen-msg-role {
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.qwen-full-log .qwen-msg pre {
+  color: inherit;
+  font-size: 0.9rem;
+  line-height: 1.6;
+}
+
+.qwen-full-log .tool-result {
+  color: #0f172a;
+}
+
+.qwen-full-log .tool-result-header {
+  color: #1e293b;
+  font-weight: 600;
+}
+
+.qwen-full-log .tool-result-link {
+  color: #2563eb;
+}
+
+.qwen-full-log .tool-result-link:hover {
+  color: #1d4ed8;
+}
+
+.qwen-full-log .tool-result-meta {
+  color: #64748b;
+}
+
+.qwen-full-log .tool-result-snippet {
+  color: #475569;
+}
+
+.qwen-full-controls {
+  padding: 20px 24px;
+  border-top: 1px solid #e2e8f0;
+  background: white;
+}
+
+.qwen-full-controls .qwen-input-row {
+  max-width: 100%;
+}
+
+@media (max-width: 1024px) {
+  .qwen-full-container {
+    grid-template-columns: 1fr;
+  }
+
+  .qwen-full-sidebar {
+    position: static;
   }
 }
