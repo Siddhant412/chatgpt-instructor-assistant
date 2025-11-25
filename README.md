@@ -12,6 +12,7 @@ This repository contains the full-stack “Instructor Assistant” web app that 
 - **Canvas Export** – Save Markdown locally or push directly to Canvas with per-quiz settings (course, title, time limit, publish toggle).
 - **Local LLM Support** – When `LLM_PROVIDER=local`, the backend orchestrates tool calls (`list_contexts`, `read_context`) so a local Llama model can read uploaded PDFs/PPTX excerpts before answering.
 - **Qwen Agent Chat** – Floating chat bubble (bottom-right) that uses a local Qwen model (via Ollama) to pick and call tools automatically (web/news/arXiv/PDF/YouTube) and guide you to Research Library, Notes, or Question Sets.
+- **RAG Utility** – PDF ingestion + FAISS index builder for retrieval-augmented generation (`webapp/backend/rag/ingest.py`; requires `langchain-text-splitters`, `langchain-community`, `faiss-cpu`).
 
 ## Repository Layout
 
@@ -108,6 +109,14 @@ The server exposes these tools:
 - `read_context(context_id, start=0, length=4000)` – fetches a text slice from a context so the model can page through long documents.
 - `delete_context(context_id)` – removes a context entry.
 - `generate_question_set(instructions, context_ids?, provider?, question_count?, question_types?)` – invokes the shared `generate_questions` pipeline and returns the structured questions plus Canvas-ready Markdown.
+
+## RAG Utility
+
+If you want a local retrieval-augmented workflow, use `webapp/backend/rag/ingest.py` to ingest PDFs into a FAISS index. It loads PDFs, splits text, builds embeddings, and saves the index/metadata. Install extra deps:
+```
+pip install "langchain-text-splitters" "langchain-community" "faiss-cpu"
+```
+Then run the ingest flow in the UI.
 
 ## Qwen Agent Chat (Ollama)
 

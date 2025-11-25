@@ -35,7 +35,8 @@ import type {
   QuestionGenerationPayload,
   QuestionInsertionPayload,
   QuestionInsertionPreview,
-  QuestionSetMeta
+  QuestionSetMeta,
+  AgentChatMessage
 } from "./types";
 
 type QuestionForm = Question & { optionsDraft?: string };
@@ -89,6 +90,37 @@ type MarkdownViewMode = "edit" | "preview";
 function App() {
   const [page, setPage] = useState<Page>("landing");
   const [focusNoteId, setFocusNoteId] = useState<number | null>(null);
+  const QWEN_STORAGE_KEY = "qwen.chat.fullpage.history";
+  const qwenDefaultMessages: AgentChatMessage[] = [
+    {
+      role: "assistant",
+      content:
+        "Hi! I'm the Qwen agent. Ask me anything—I'll pick the right tool (web/news/arXiv/PDF/YouTube) and guide you to Research Library, Notes, or Question Sets when needed."
+    }
+  ];
+  const [qwenMessages, setQwenMessages] = useState<AgentChatMessage[]>(qwenDefaultMessages);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const saved = window.localStorage.getItem(QWEN_STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) setQwenMessages(parsed as AgentChatMessage[]);
+      }
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(QWEN_STORAGE_KEY, JSON.stringify(qwenMessages));
+    } catch {
+      /* ignore */
+    }
+  }, [qwenMessages]);
 
   function handleOpenNote(noteId: number) {
     setFocusNoteId(noteId);
@@ -128,7 +160,23 @@ function App() {
         {page === "papers" && <ResearchPapersPage onBack={() => setPage("landing")} onOpenNote={handleOpenNote} />}
         {page === "notes" && <NotesPage onBack={() => setPage("landing")} focusNoteId={focusNoteId} onFocusConsumed={() => setFocusNoteId(null)} />}
         {page === "questions" && <QuestionSetsPage onBack={() => setPage("landing")} />}
-        {page === "qwen" && <QwenFullPage onNavigate={setPage} />}
+        {page === "qwen" && (
+          <QwenFullPage
+            onNavigate={setPage}
+            messages={qwenMessages}
+            setMessages={setQwenMessages}
+            onReset={() => {
+              setQwenMessages(qwenDefaultMessages);
+              if (typeof window !== "undefined") {
+                try {
+                  window.localStorage.removeItem(QWEN_STORAGE_KEY);
+                } catch {
+                  /* ignore */
+                }
+              }
+            }}
+          />
+        )}
         {page === "rag" && <RAGPage onBack={() => setPage("landing")} />}
       </main>
       {page !== "qwen" && <QwenChatWidget onNavigate={setPage} />}
@@ -1067,6 +1115,7 @@ function describeInsertIndex(insertIndex: number, questions: QuestionForm[]): st
 }
 
 function QuestionSetsPage({ onBack }: { onBack: () => void }) {
+  const QWEN_MD_KEY = "qwen.md.draft";
   const [sets, setSets] = useState<QuestionSetMeta[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [prompt, setPrompt] = useState("");
@@ -1122,6 +1171,25 @@ function QuestionSetsPage({ onBack }: { onBack: () => void }) {
     return () => {
       streamControllerRef.current?.abort();
     };
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const stored = window.localStorage.getItem(QWEN_MD_KEY);
+      if (stored) {
+        const payload = JSON.parse(stored);
+        if (payload && typeof payload.markdown === "string") {
+          setMode("upload");
+          setMarkdownDraft(payload.markdown);
+          setSelectedFileName(payload.filename || "question-set.md");
+          setMarkdownStatus("Loaded markdown from Qwen agent.");
+        }
+        window.localStorage.removeItem(QWEN_MD_KEY);
+      }
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   async function refreshSets() {

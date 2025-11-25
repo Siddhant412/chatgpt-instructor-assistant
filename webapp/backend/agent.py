@@ -95,20 +95,6 @@ TOOL_DEFS: List[Dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "pdf_summary",
-            "description": "Extract text from a PDF and return a summary-ready excerpt",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "pdf_path": {"type": "string", "description": "Path to the PDF file"}
-                },
-                "required": ["pdf_path"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "youtube_search",
             "description": "Search for videos on YouTube",
             "parameters": {
@@ -247,6 +233,17 @@ TOOL_DEFS: List[Dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_last_summary",
+            "description": "Save the most recent summary produced by summarize_paper into Notes.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+            },
+        },
+    },
 ]
 
 
@@ -258,11 +255,9 @@ IMPORTANT TOOL USAGE RULES:
 
 2. When user asks to "find" or "search", use search tools first (arxiv_search, youtube_search)
 
-3. If user says "download and summarize", use download tool THEN pdf_summary tool
+3. ALWAYS actually execute download tools - don't just provide links
 
-4. ALWAYS actually execute download tools - don't just provide links
-
-5. After downloading, confirm the file location
+4. After downloading, confirm the file location
 
 Pick and call tools when they help answer the user's request. Prefer accurate retrieval over guessing.
 If a task references the app's pages, you can mention the right section (Research Library, Notes, Question Sets) but tools are your primary way to fetch fresh info.
@@ -270,28 +265,17 @@ Never fabricate tool results—if a tool fails, explain briefly.
 When the user asks for a paper summary:
 - If no paper_id is provided and no recent download is known, ask which paper (by id/title) to summarize.
 - If summarization fails, report the error instead of guessing.
-After summarizing, ask if the user wants to save it to Notes; if yes, call save_note_entry with the summary.
+After summarizing, ask if the user wants to save it to Notes; if yes, call save_last_summary (preferred) or save_note_entry with the summary.
 When saving a summary/note, use the paper title as the note title (unless the user provides one) and tell the user it was saved to Notes (not the Research Library).
-
-Available actions:
-
-- arxiv_search: Find papers (returns metadata)
-
-- arxiv_download: Actually download PDF files locally
-
-- youtube_search: Find videos (returns metadata)  
-
-- youtube_download: Actually download video files locally
-
-- web_search: Search the web
-
-- get_news: Get latest news
-
-- pdf_summary: Summarize downloaded PDFs"""
+When asked to summarize a paper, use the summarize_paper tool (do not use pdf_summary).
+When asked to generate questions:
+- If context_ids are not provided but contexts exist, automatically use the most recently uploaded context(s).
+- Call generate_question_set with the context text; don't ask the user to restate context_ids unless none are available."""
 
 QWEN_MODEL = os.getenv("QWEN_AGENT_MODEL", "qwen2.5:7b")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST")  # optional override
 _LAST_DOWNLOADED_PAPER_ID: int | None = None
+_LAST_SUMMARY: Dict[str, Any] | None = None
 logger = logging.getLogger(__name__)
 
 
@@ -336,6 +320,19 @@ def _save_note_direct(paper_id: int, title: str | None, body: str) -> Dict[str, 
     return {"note_id": nid, "note": dict(row) if row else None, "paper_title": paper_title}
 
 
+def _save_last_summary() -> Dict[str, Any]:
+    if not _LAST_SUMMARY:
+        raise ValueError("No recent summary available to save. Summarize a paper first.")
+    pid = _LAST_SUMMARY.get("paper_id")
+    if not pid:
+        raise ValueError("No paper_id found for the recent summary.")
+    return _save_note_direct(
+        int(pid),
+        _LAST_SUMMARY.get("suggested_title") or _LAST_SUMMARY.get("paper_title"),
+        _LAST_SUMMARY.get("summary") or "",
+    )
+
+
 def _summarize_paper(paper_id: int) -> Dict[str, Any]:
     logger.info("[agent] summarize_paper paper_id=%s", paper_id)
     data = summarize_paper_chat(
@@ -344,12 +341,15 @@ def _summarize_paper(paper_id: int) -> Dict[str, Any]:
     )
     if not data or not data.get("message"):
         raise ValueError("Summarization returned no content. Ensure the paper is indexed and try again.")
-    return {
+    summary_payload = {
         "paper_id": paper_id,
         "summary": data.get("message"),
         "suggested_title": data.get("suggested_title") or data.get("paper_title") or "Summary",
         "paper_title": data.get("paper_title"),
     }
+    global _LAST_SUMMARY
+    _LAST_SUMMARY = summary_payload
+    return summary_payload
 
 
 def _list_contexts() -> Dict[str, Any]:
@@ -392,6 +392,9 @@ def _generate_question_set_from_context(payload: Dict[str, Any]) -> Dict[str, An
     context_ids = payload.get("context_ids")
     context_text = _combine_contexts_text(context_ids or None)
     if not context_text:
+        # Fallback: use all available contexts if none were provided explicitly
+        context_text = _combine_contexts_text(None)
+    if not context_text:
         raise ValueError("No context available. Upload a PDF/PPTX first.")
     instructions = raw_instructions.strip()
     if len(instructions) < 5:
@@ -418,6 +421,8 @@ def _generate_question_set_from_context(payload: Dict[str, Any]) -> Dict[str, An
         "questions": [q.model_dump() for q in result.questions],
         "markdown": result.markdown,
         "raw_response": result.raw_response,
+        "action": "open_md_editor",
+        "filename": "question-set.md",
     }
 
 
@@ -427,6 +432,20 @@ def run_agent(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
     Accepts messages with role user/assistant/tool.
     Returns the expanded conversation (excluding the initial system prompt).
     """
+    latest_context_ids: List[str] = []
+    last_user_text = ""
+    saved_note_this_turn = False
+    for m in messages:
+        if m.get("role") == "tool" and m.get("name") == "context_hint":
+            try:
+                payload = json.loads(m.get("content") or "{}")
+                ids = payload.get("context_ids") if isinstance(payload, dict) else None
+                if isinstance(ids, list):
+                    latest_context_ids = [str(i) for i in ids if isinstance(i, str)]
+            except Exception:
+                continue
+        if m.get("role") == "user":
+            last_user_text = m.get("content") or ""
     global _LAST_DOWNLOADED_PAPER_ID
     convo: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
     for m in messages:
@@ -471,7 +490,6 @@ def run_agent(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
                     "get_news",
                     "arxiv_search",
                     "arxiv_download",
-                    "pdf_summary",
                     "youtube_search",
                     "youtube_download",
                 }:
@@ -487,6 +505,10 @@ def run_agent(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
                     if pid is None:
                         raise ValueError("paper_id is required.")
                     result = _save_note_direct(int(pid), args.get("title"), args.get("body") or "")
+                    saved_note_this_turn = True
+                elif name == "save_last_summary":
+                    result = _save_last_summary()
+                    saved_note_this_turn = True
                 elif name == "list_contexts":
                     result = _list_contexts()
                 elif name == "read_context":
@@ -496,7 +518,10 @@ def run_agent(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
                         args.get("length"),
                     )
                 elif name == "generate_question_set":
-                    result = _generate_question_set_from_context(args or {})
+                    payload_args = args or {}
+                    if not payload_args.get("context_ids") and latest_context_ids:
+                        payload_args["context_ids"] = latest_context_ids
+                    result = _generate_question_set_from_context(payload_args)
                 elif name == "download_markdown":
                     md = args.get("markdown") if isinstance(args, dict) else None
                     fname = args.get("filename") if isinstance(args, dict) else None
@@ -532,5 +557,33 @@ def run_agent(messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
                     "content": result_text,
                 }
             )
+
+    # Heuristic fallback: if user asked to save/add summary and no tool call happened, auto-save the last summary.
+    if last_user_text and not saved_note_this_turn:
+        lt = last_user_text.lower()
+        if ("save" in lt or "add" in lt) and ("note" in lt or "notes" in lt) and _LAST_SUMMARY:
+            try:
+                saved = _save_last_summary()
+                convo.append(
+                    {
+                        "role": "tool",
+                        "name": "save_last_summary",
+                        "content": json.dumps(saved, ensure_ascii=False, indent=2),
+                    }
+                )
+                note_title = (saved.get("note") or {}).get("title") if isinstance(saved, dict) else None
+                convo.append(
+                    {
+                        "role": "assistant",
+                        "content": f"Saved the most recent summary to Notes as '{note_title or (_LAST_SUMMARY.get('paper_title') or 'Summary')}'.",
+                    }
+                )
+            except Exception as exc:
+                convo.append(
+                    {
+                        "role": "assistant",
+                        "content": f"Could not save the summary to Notes: {exc}",
+                    }
+                )
     # Drop system prompt before returning
     return [m for m in convo if m.get("role") != "system"]

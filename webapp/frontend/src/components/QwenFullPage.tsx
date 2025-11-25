@@ -1,9 +1,12 @@
-import React, { useMemo, useState } from "react";
-import { agentChat } from "../api";
-import type { AgentChatMessage, YoutubeSearchResult, WebSearchResult, NewsResult, ArxivSearchResult } from "../types";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { agentChat, uploadQuestionContext } from "../api";
+import type { AgentChatMessage, YoutubeSearchResult, WebSearchResult, NewsResult, ArxivSearchResult, QuestionContext } from "../types";
 
 interface QwenFullPageProps {
-  onNavigate?: (page: "landing" | "papers" | "notes" | "questions") => void;
+  onNavigate?: (page: "landing" | "papers" | "notes" | "questions" | "qwen") => void;
+  messages?: AgentChatMessage[];
+  setMessages?: (msgs: AgentChatMessage[]) => void;
+  onReset?: () => void;
 }
 
 function formatDuration(seconds: number): string {
@@ -152,39 +155,126 @@ function formatToolResult(message: AgentChatMessage): React.ReactNode {
       );
     }
 
-    // For other tool results or if parsing fails, show formatted JSON
-    return (
-      <pre className="tool-result-json">{JSON.stringify(data, null, 2)}</pre>
-    );
+    // For other tool results or if parsing fails, show formatted JSON (unless it's a pure navigation signal)
+    if (data && typeof data === "object" && (data as any).action === "open_md_editor") {
+      return null;
+    }
+    return <pre className="tool-result-json">{JSON.stringify(data, null, 2)}</pre>;
   } catch {
     // If it's not JSON, just return the content as-is
     return message.content;
   }
 }
 
-export function QwenFullPage({ onNavigate }: QwenFullPageProps) {
-  const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [messages, setMessages] = useState<AgentChatMessage[]>([
+export function QwenFullPage({ onNavigate, messages: injectedMessages, setMessages: setInjectedMessages, onReset }: QwenFullPageProps) {
+  const STORAGE_KEY = "qwen.chat.fullpage.history";
+  const defaultMessages: AgentChatMessage[] = [
     {
       role: "assistant",
       content:
         "Hi! I'm the Qwen agent. Ask me anything—I'll pick the right tool (web/news/arXiv/PDF/YouTube) and guide you to Research Library, Notes, or Question Sets when needed."
     }
-  ]);
+  ];
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [localMessages, setLocalMessages] = useState<AgentChatMessage[]>(defaultMessages);
+  const messages = injectedMessages ?? localMessages;
+  const setMessages = setInjectedMessages ?? setLocalMessages;
+  const [contextIds, setContextIds] = useState<string[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const placeholder = useMemo(() => "Start chatting...", []);
+
+  useEffect(() => {
+    if (injectedMessages) return;
+    if (typeof window === "undefined") return;
+    try {
+      const saved = window.localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) setLocalMessages(parsed as AgentChatMessage[]);
+      }
+    } catch {
+      /* ignore storage errors */
+    }
+  }, [injectedMessages]);
+
+  useEffect(() => {
+    if (injectedMessages) return;
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+    } catch {
+      /* ignore */
+    }
+  }, [messages, injectedMessages]);
 
   async function runTool() {
     if (!input.trim()) return;
     setBusy(true);
-    const nextHistory = [...messages, { role: "user" as const, content: input.trim() }];
+    const contextHint =
+      contextIds.length > 0
+        ? [
+            {
+              role: "tool" as const,
+              name: "context_hint",
+              content: JSON.stringify({ context_ids: contextIds }),
+            },
+          ]
+        : [];
+    const nextHistory = [...messages, ...contextHint, { role: "user" as const, content: input.trim() }];
     setMessages(nextHistory);
     setInput("");
     try {
+      const prevCount = messages.length;
       const updated = await agentChat(nextHistory);
       setMessages(updated);
+      updated.slice(prevCount).forEach((m) => {
+        if (m.role !== "tool") return;
+        try {
+          const parsed = JSON.parse(m.content);
+          if (parsed && parsed.action === "open_md_editor" && parsed.markdown) {
+            window.localStorage.setItem(
+              "qwen.md.draft",
+              JSON.stringify({ markdown: parsed.markdown, filename: parsed.filename || "question-set.md" })
+            );
+            onNavigate?.("questions");
+          }
+        } catch {
+          /* ignore */
+        }
+      });
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function handleFileSelect(fileList: FileList | null) {
+    if (!fileList || !fileList.length) return;
+    const file = fileList[0];
+    setUploading(true);
+    try {
+      const ctx: QuestionContext = await uploadQuestionContext(file);
+      setContextIds((prev) => {
+        const set = new Set(prev);
+        set.add(ctx.context_id);
+        return Array.from(set);
+      });
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: "assistant",
+          content: `Uploaded ${ctx.filename} for question generation. Ask me to generate questions when ready.`,
+        },
+      ]);
+    } catch (err: any) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: `Upload failed: ${err?.message || "Unknown error"}` },
+      ]);
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   }
 
@@ -197,6 +287,25 @@ export function QwenFullPage({ onNavigate }: QwenFullPageProps) {
         </div>
         <div className="page-actions">
           <button onClick={() => onNavigate?.("landing")}>Back</button>
+          <button
+            className="ghost"
+            onClick={() => {
+              if (onReset) {
+                onReset();
+              } else {
+                setMessages(defaultMessages);
+                if (typeof window !== "undefined") {
+                  try {
+                    window.localStorage.removeItem(STORAGE_KEY);
+                  } catch {
+                    /* ignore */
+                  }
+                }
+              }
+            }}
+          >
+            Reset
+          </button>
         </div>
       </div>
 
@@ -244,7 +353,9 @@ export function QwenFullPage({ onNavigate }: QwenFullPageProps) {
           </div>
 
           <div className="qwen-full-log">
-            {messages.map((m, idx) => {
+            {messages
+              .filter((m) => !(m.role === "tool" && (m.name === "context_hint" || m.name === "context_hint_full")))
+              .map((m, idx) => {
               // Hide assistant messages that immediately follow tool messages
               // (we show the formatted tool result instead)
               if (m.role === "assistant") {
@@ -268,9 +379,22 @@ export function QwenFullPage({ onNavigate }: QwenFullPageProps) {
           <div className="qwen-full-controls">
             <div className="qwen-input-row">
               <div className="qwen-input-left">
-                <button className="qwen-attach-btn" type="button" title="Attach (coming soon)">
+                <button
+                  className="qwen-attach-btn"
+                  type="button"
+                  title="Attach PDF/PPTX for question generation"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading}
+                >
                   📎
                 </button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf,.ppt,.pptx"
+                  style={{ display: "none" }}
+                  onChange={(e) => handleFileSelect(e.target.files)}
+                />
               </div>
               <input
                 className="qwen-input"
@@ -294,4 +418,3 @@ export function QwenFullPage({ onNavigate }: QwenFullPageProps) {
     </section>
   );
 }
-

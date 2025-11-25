@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { agentChat, uploadQuestionContext } from "../api";
 import type { AgentChatMessage, QuestionContext, YoutubeSearchResult, WebSearchResult, NewsResult, ArxivSearchResult } from "../types";
 
@@ -188,24 +188,63 @@ function formatToolResult(message: AgentChatMessage): React.ReactNode {
 }
 
 export function QwenChatWidget({ onNavigate }: QwenChatWidgetProps) {
-  const [open, setOpen] = useState(false);
-  const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [messages, setMessages] = useState<AgentChatMessage[]>([
+  const STORAGE_KEY = "qwen.chat.history";
+  const defaultMessages: AgentChatMessage[] = [
     {
       role: "assistant",
       content:
         "Hi! I'm the Qwen agent. Ask me anything—I'll pick the right tool (web/news/arXiv/PDF/YouTube) and guide you to Research Library, Notes, or Question Sets when needed."
     }
-  ]);
+  ];
+  const [open, setOpen] = useState(false);
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [messages, setMessages] = useState<AgentChatMessage[]>(defaultMessages);
+  const [contextIds, setContextIds] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const placeholder = useMemo(() => "Start chatting...", []);
+
+  // Hydrate chat history from localStorage
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const saved = window.localStorage.getItem(STORAGE_KEY);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          setMessages(parsed as AgentChatMessage[]);
+        }
+      }
+    } catch {
+      // ignore malformed storage
+    }
+  }, []);
+
+  // Persist chat history to localStorage
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(messages));
+    } catch {
+      // ignore storage errors
+    }
+  }, [messages]);
 
   async function runTool() {
     if (!input.trim()) return;
     setBusy(true);
-    const nextHistory = [...messages, { role: "user" as const, content: input.trim() }];
+    const contextHint =
+      contextIds.length > 0
+        ? [
+            {
+              role: "tool" as const,
+              name: "context_hint",
+              content: JSON.stringify({ context_ids: contextIds }),
+            },
+          ]
+        : [];
+    const nextHistory = [...messages, ...contextHint, { role: "user" as const, content: input.trim() }];
     setMessages(nextHistory);
     setInput("");
     try {
@@ -228,6 +267,16 @@ export function QwenChatWidget({ onNavigate }: QwenChatWidgetProps) {
               triggerDownload(parsed.markdown, parsed.filename || "question-set.md");
             }
             if (parsed && parsed.action === "open_md_editor") {
+              if (parsed.markdown) {
+                try {
+                  window.localStorage.setItem(
+                    "qwen.md.draft",
+                    JSON.stringify({ markdown: parsed.markdown, filename: parsed.filename || "question-set.md" })
+                  );
+                } catch {
+                  /* ignore storage errors */
+                }
+              }
               onNavigate?.("questions");
             }
           } catch {
@@ -262,6 +311,11 @@ export function QwenChatWidget({ onNavigate }: QwenChatWidgetProps) {
     setUploading(true);
     try {
       const ctx: QuestionContext = await uploadQuestionContext(file);
+      setContextIds((prev) => {
+        const set = new Set(prev);
+        set.add(ctx.context_id);
+        return Array.from(set);
+      });
       setMessages((prev) => [
         ...prev,
         {
@@ -313,7 +367,16 @@ export function QwenChatWidget({ onNavigate }: QwenChatWidgetProps) {
               <button
                 type="button"
                 className="ghost"
-                onClick={() => setMessages((prev) => prev.slice(0, 1))}
+                onClick={() => {
+                  setMessages(defaultMessages);
+                  if (typeof window !== "undefined") {
+                    try {
+                      window.localStorage.removeItem(STORAGE_KEY);
+                    } catch {
+                      /* ignore */
+                    }
+                  }
+                }}
               >
                 Reset
               </button>
@@ -338,6 +401,10 @@ export function QwenChatWidget({ onNavigate }: QwenChatWidgetProps) {
 
           <div className="qwen-log">
             {messages.map((m, idx) => {
+              // Hide context hint tool messages
+              if (m.role === "tool" && (m.name === "context_hint" || m.name === "context_hint_full")) {
+                return null;
+              }
               // Hide assistant messages that immediately follow tool messages
               // (we show the formatted tool result instead)
               if (m.role === "assistant") {

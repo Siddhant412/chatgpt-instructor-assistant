@@ -24,3 +24,4 @@ npm-debug.log*
 Thumbs.db
 ngrok-mcp.yml
 webapp/downloads/*
+searxng.yml
