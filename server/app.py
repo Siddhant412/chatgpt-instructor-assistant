@@ -50,77 +50,7 @@ else:
 WIDGET_CSS = _read_first(["*.css", "assets/*.css"])
 
 
-def _ensure_notes_fk_set_null() -> None:
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='notes'"
-        ).fetchone()
-        if not row:
-            return
-        ddl = row[0] or ""
-        if "FOREIGN KEY" in ddl and "ON DELETE SET NULL" in ddl:
-            return
-        print("[db] Migrating notes FK to ON DELETE SET NULL …", flush=True)
-        conn.execute("PRAGMA foreign_keys=OFF")
-        conn.execute("BEGIN")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS notes_new (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                paper_id INTEGER NULL,
-                title TEXT,
-                body TEXT NOT NULL,
-                created_at TEXT DEFAULT (datetime('now')),
-                FOREIGN KEY(paper_id) REFERENCES papers(id) ON DELETE SET NULL
-            );
-        """
-        )
-        conn.execute(
-            """
-            INSERT INTO notes_new (id, paper_id, title, body, created_at)
-            SELECT id, paper_id, title, body, created_at FROM notes;
-        """
-        )
-        conn.execute("DROP TABLE IF EXISTS notes;")
-        conn.execute("ALTER TABLE notes_new RENAME TO notes;")
-        conn.execute("COMMIT")
-        conn.execute("PRAGMA foreign_keys=ON")
-        print("[db] Migration complete.", flush=True)
-
-
-def _ensure_question_tables() -> None:
-    with get_conn() as conn:
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS question_sets (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                prompt TEXT NOT NULL,
-                created_at TEXT DEFAULT (datetime('now'))
-            );
-        """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS questions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                set_id INTEGER NOT NULL,
-                kind TEXT NOT NULL,
-                text TEXT NOT NULL,
-                options_json TEXT,
-                answer TEXT,
-                explanation TEXT,
-                reference TEXT,
-                FOREIGN KEY(set_id) REFERENCES question_sets(id) ON DELETE CASCADE
-            );
-        """
-        )
-        conn.commit()
-
-
 init_db()
-_ensure_notes_fk_set_null()
-_ensure_question_tables()
 
 # MCP server + UI resource
 

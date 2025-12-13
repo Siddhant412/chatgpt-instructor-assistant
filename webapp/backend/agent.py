@@ -7,10 +7,10 @@ from typing import List, Dict, Any
 
 from pathlib import Path
 import ollama
-from server.db import get_conn
+from webapp.core.database import get_conn
 
 from . import qwen_tools
-from server.tools.add_paper import add_local_pdf
+from webapp.core.library import add_local_pdf
 from webapp.backend.services import summarize_paper_chat
 from webapp.backend.schemas import PaperChatMessage
 from webapp.backend.mcp_client import call_tool as call_mcp_tool

@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from mcp.types import CallToolResult, TextContent
 
-from server.question_sets import (
+from webapp.core.questions import (
     create_question_set,
     delete_question_set,
     get_question_set,

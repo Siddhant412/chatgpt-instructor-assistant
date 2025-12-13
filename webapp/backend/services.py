@@ -15,8 +15,8 @@ from litellm import acompletion, completion
 from pptx import Presentation
 from pypdf import PdfReader
 
-from server.db import get_conn
-from server.tools.canvas_export import render_canvas_markdown
+from webapp.core.database import get_conn
+from webapp.core.questions import render_canvas_markdown
 from .mcp_client import MCPClientError, call_tool as call_mcp_tool, is_configured as mcp_configured
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())

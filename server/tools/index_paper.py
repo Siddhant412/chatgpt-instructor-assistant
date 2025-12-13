@@ -1,8 +1,8 @@
-from server.db import get_conn
+"""
+Wrapper for shared index_paper implementation.
+"""
+from webapp.core.library import index_paper as index_paper_impl
+
 
 def index_paper(paper_id: int):
-    with get_conn() as conn:
-        rows = [dict(r) for r in conn.execute(
-            "SELECT id, page_no FROM sections WHERE paper_id=? ORDER BY page_no ASC", (paper_id,)
-        )]
-    return {"sections": rows}
+    return index_paper_impl(paper_id)

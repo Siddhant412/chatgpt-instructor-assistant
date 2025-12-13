@@ -12,17 +12,15 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from server.db import get_conn
-from server.question_sets import (
+from webapp.core.database import get_conn
+from webapp.core.library import render_library_structured, add_paper, delete_paper as delete_paper_record
+from webapp.core.questions import (
     create_question_set,
     delete_question_set,
     get_question_set,
     list_question_sets,
     update_question_set,
 )
-from server.tools.render_library import render_library_structured
-from server.tools.add_paper import add_paper
-from server.tools.delete_paper import delete_paper as delete_paper_record
 
 from .schemas import (
     CanvasPushRequest,
