@@ -5,7 +5,7 @@ litellm==1.40.12
 pypdf==4.2.0
 python-pptx==0.6.23
 python-dotenv==1.0.1
-requests==2.32.3
+requests==2.32.5
 duckduckgo-search==6.2.12
 feedparser==6.0.11
 arxiv==2.1.3

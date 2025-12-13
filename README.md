@@ -100,7 +100,7 @@ To start the MCP server for local LLM, run the following command from the root d
 python -m webapp.mcp_server.app
 ```
 
-Set `LOCAL_MCP_SERVER_URL` in the `.env` to the exposed `/mcp` endpoint (for example `http://127.0.0.1:8000/mcp`).
+Set `LOCAL_MCP_SERVER_URL` in the `.env` to the exposed `/mcp` endpoint (for example `http://127.0.0.1:8020/mcp`).
 
 The server exposes these tools:
 

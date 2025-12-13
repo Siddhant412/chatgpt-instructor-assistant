@@ -74,7 +74,31 @@ html, body { background: transparent; }
 .ra-q + .ra-q{ margin-top:10px; }
 .ra-q .kind{ font-size:12px; color:#1e40af; background:rgba(59,130,246,0.10); border:1px solid rgba(59,130,246,0.25); border-radius:999px; padding:2px 8px; margin-right:8px; }
 .ra-q .ref{ font-size:12px; color:var(--ra-muted); }
+
+/* App chrome + homepage */
+.ra-app-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:20px;flex-wrap:wrap;}
+.ra-app-head h1{margin:0;font-size:22px;color:var(--ra-heading);}
+.ra-app-head p{margin:4px 0 0 0;color:var(--ra-muted);}
+.ra-head-nav{display:flex;gap:8px;flex-wrap:wrap;}
+.ra-head-nav button{border:1px solid transparent;background:var(--ra-hover);padding:6px 14px;border-radius:999px;font-weight:600;cursor:pointer;}
+.ra-head-nav button.active{background:var(--ra-primary);color:#fff;border-color:var(--ra-primary);}
+.ra-head-nav button:hover{background:var(--ra-soft-blue);}
+.ra-home-shell{display:flex;flex-direction:column;gap:18px;}
+.home-hero{border:1px solid var(--ra-border);border-radius:16px;background:linear-gradient(135deg,rgba(59,130,246,0.15),rgba(59,130,246,0.05));padding:20px;display:flex;flex-direction:column;gap:12px;}
+.home-hero h2{margin:0;font-size:20px;color:var(--ra-heading);}
+.home-tag{font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#1d4ed8;margin:0;}
+.home-hero-actions{display:flex;flex-wrap:wrap;gap:10px;}
+.home-card-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;}
+.home-card{border:1px solid var(--ra-border);border-radius:14px;padding:16px;background:#fff;display:flex;flex-direction:column;gap:10px;box-shadow:0 4px 10px var(--ra-elev);}
+.home-card h3{margin:0;color:var(--ra-heading);}
+.home-card p{margin:0;color:var(--ra-muted);}
+.home-card-actions{margin-top:auto;display:flex;gap:8px;flex-wrap:wrap;}
+.home-card button{border-radius:10px;padding:6px 12px;border:1px solid var(--ra-border);background:var(--ra-hover);cursor:pointer;font-weight:600;}
+.home-card button.primary{background:var(--ra-primary);color:#fff;border-color:var(--ra-primary);}
+.home-metric{font-size:12px;font-weight:600;color:var(--ra-muted);}
 `;
+
+type Page = "home" | "papers" | "notes" | "questions";
 
 type PaperRow = { id: number; title: string; source_url?: string | null; note_count?: number };
 type NoteRow = { id: number; paper_id: number | null; title?: string | null; body: string; created_at?: string; paper_title?: string | null };
@@ -123,8 +147,7 @@ function useDebouncedCallback<T extends (...args: any[]) => void>(fn: T, delay: 
 
 export default function App() {
   // ----- Modes -----
-  const [editorOpen, setEditorOpen] = useState(false);
-  const [testOpen, setTestOpen] = useState(false);
+  const [page, setPage] = useState<Page>("home");
 
   // ----- Library data -----
   const [data, setData] = useState<{ papers: PaperRow[]; notesByPaper: Record<string, NoteRow[]> }>(() =>
@@ -132,6 +155,8 @@ export default function App() {
     normalizeStructured(window.openai?.toolOutput?.structuredContent) ?? { papers: [], notesByPaper: {} }
   );
   const [selectedPaperId, setSelectedPaperId] = useState<number | null>(() => data.papers[0]?.id ?? null);
+  const editorOpen = page === "notes";
+  const testOpen = page === "questions";
 
   // Inline "Add paper"
   const [addPaperOpen, setAddPaperOpen] = useState(false);
@@ -167,6 +192,9 @@ export default function App() {
     })();
   }, []);
 
+  const totalNotes = useMemo(() => {
+    return Object.values(data.notesByPaper || {}).reduce((acc, notes) => acc + (notes?.length ?? 0), 0);
+  }, [data]);
   const selectedNotes = useMemo(() => {
     if (selectedPaperId == null) return [];
     return data.notesByPaper[String(selectedPaperId)] ?? [];
@@ -180,11 +208,13 @@ export default function App() {
   useEffect(() => {
     const off = window.openai?.onStructuredContent?.((sc: any) => {
       // If in Test mode, ignore library pushes so the UI doesnt jump back
-      if (!testOpen) {
+      if (page !== "questions") {
         const nextLib = normalizeStructured(sc);
         if (nextLib) {
           setData(nextLib);
-          setEditorOpen(false);
+          if (page !== "home") {
+            setPage("papers");
+          }
           if (nextLib.papers.length > 0 && (selectedPaperId == null || !nextLib.papers.some(p => p.id === selectedPaperId))) {
             setSelectedPaperId(nextLib.papers[0].id);
           }
@@ -198,15 +228,14 @@ export default function App() {
       }
     });
     return () => { if (typeof off === "function") off(); };
-  }, [testOpen, selectedPaperId]);
+  }, [page, selectedPaperId]);
 
   async function refreshLibrary() {
     const out = await window.openai?.callTool?.("render_library", {});
     const sc = normalizeStructured(out?.structuredContent ?? out);
     if (sc) {
       setData(sc);
-      setEditorOpen(false);
-      setTestOpen(false);
+      setPage("papers");
     }
   }
 
@@ -218,8 +247,7 @@ export default function App() {
     return notes;
   }
   function enterEditor(openFirst = true) {
-    setEditorOpen(true);
-    setTestOpen(false);
+    setPage("notes");
     (async () => {
       const notes = await loadAllNotes();
       if (openFirst && notes.length > 0) {
@@ -235,7 +263,7 @@ export default function App() {
       setSaveState("idle");
     })();
   }
-  function exitEditor() { setEditorOpen(false); setActiveNoteId(null); setSaveState("idle"); }
+  function exitEditor() { setPage("papers"); setActiveNoteId(null); setSaveState("idle"); }
   function pickNote(n: NoteRow) {
     setActiveNoteId(n.id);
     setDraftTitle(n.title || "");
@@ -304,8 +332,7 @@ Steps: index, read chunks, write 250-400 word summary + 5 takeaways + 3 limitati
 
   // ---------- Test ----------
   function enterTestBuilder() {
-    setTestOpen(true);
-    setEditorOpen(false);
+    setPage("questions");
     // Minimal guardrail: stay silent on attachments; wait for Generate.
     void window.openai?.sendFollowUpMessage?.({
       prompt: `TEST_MODE:ON
@@ -318,7 +345,7 @@ While Test mode is open:
     setQuestions([]);
   }
   function exitTestBuilder() {
-    setTestOpen(false);
+    setPage("papers");
     setQuestionSet(null);
     setQuestions([]);
     void window.openai?.sendFollowUpMessage?.({ prompt: "TEST_MODE:OFF" });
@@ -413,7 +440,30 @@ Do exactly this (read all these below instructions very carefully, and you have 
       <style>{RA_THEME}</style>
 
       <div className="ra-outer">
-        {!editorOpen && !testOpen ? (
+        <header className="ra-app-head">
+          <div>
+            <p className="home-tag">Instructor Assistant</p>
+            <h1>Workspace Hub</h1>
+            <p>Access your research library, notes, and practice questions without leaving ChatGPT.</p>
+          </div>
+          <div className="ra-head-nav">
+            <button className={page === "home" ? "active" : ""} onClick={() => setPage("home")}>Home</button>
+            <button className={page === "papers" ? "active" : ""} onClick={() => setPage("papers")}>Research Papers</button>
+            <button className={page === "notes" ? "active" : ""} onClick={() => enterEditor(true)}>Notes</button>
+            <button className={page === "questions" ? "active" : ""} onClick={() => enterTestBuilder()}>Practice Questions</button>
+          </div>
+        </header>
+
+        {page === "home" ? (
+          <HomeLanding
+            paperCount={data.papers.length}
+            noteCount={totalNotes}
+            questionSetCount={sets.length}
+            onOpenPapers={() => setPage("papers")}
+            onOpenNotes={() => enterEditor(true)}
+            onOpenQuestions={() => enterTestBuilder()}
+          />
+        ) : page === "papers" ? (
           /* -------------------- Library Mode -------------------- */
           <div className="ra-shell">
             {/* Left: papers */}
@@ -487,7 +537,7 @@ Do exactly this (read all these below instructions very carefully, and you have 
               </div>
             </section>
           </div>
-        ) : editorOpen ? (
+        ) : page === "notes" ? (
           /* -------------------- Editor Mode -------------------- */
           <div className="ra-shell">
             {/* Left: all notes */}
@@ -651,6 +701,66 @@ Do exactly this (read all these below instructions very carefully, and you have 
             </section>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+type HomeLandingProps = {
+  paperCount: number;
+  noteCount: number;
+  questionSetCount: number;
+  onOpenPapers: () => void;
+  onOpenNotes: () => void;
+  onOpenQuestions: () => void;
+};
+
+function HomeLanding({
+  paperCount,
+  noteCount,
+  questionSetCount,
+  onOpenPapers,
+  onOpenNotes,
+  onOpenQuestions,
+}: HomeLandingProps) {
+  return (
+    <div className="ra-home-shell">
+      <section className="home-hero">
+        <div>
+          <h2>Plan lectures, notes, and assessments</h2>
+          <p>Use the same workspace as your Instructor Assistant web app without leaving ChatGPT.</p>
+        </div>
+        <div className="home-hero-actions">
+          <button className="ra-btn soft-primary" onClick={onOpenPapers}>Open Research Library</button>
+          <button className="ra-btn" onClick={onOpenQuestions}>Create Practice Questions</button>
+        </div>
+      </section>
+
+      <div className="home-card-grid">
+        <div className="home-card">
+          <span className="home-metric">{paperCount} paper{paperCount === 1 ? "" : "s"} indexed</span>
+          <h3>Research Library</h3>
+          <p>Upload PDFs by DOI/URL, refresh the library, and run automated summaries.</p>
+          <div className="home-card-actions">
+            <button className="primary" onClick={onOpenPapers}>Browse Library</button>
+          </div>
+        </div>
+        <div className="home-card">
+          <span className="home-metric">{noteCount} saved note{noteCount === 1 ? "" : "s"}</span>
+          <h3>Notes Workspace</h3>
+          <p>Edit highlights, autosave drafts, and attach summaries to specific papers.</p>
+          <div className="home-card-actions">
+            <button onClick={onOpenNotes}>Edit Notes</button>
+          </div>
+        </div>
+        <div className="home-card">
+          <span className="home-metric">{questionSetCount} recent set{questionSetCount === 1 ? "" : "s"}</span>
+          <h3>Practice Questions</h3>
+          <p>Upload PDFs or PPTX files, let the assistant read them, and stream Canvas-ready Markdown.</p>
+          <div className="home-card-actions">
+            <button onClick={onOpenQuestions}>Open Builder</button>
+          </div>
+        </div>
       </div>
     </div>
   );
